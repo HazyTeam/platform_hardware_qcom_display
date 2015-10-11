@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2008 The Android Open Source Project
- * Copyright (c) 2010-2014 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2010-2012 The Linux Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -58,9 +58,8 @@ enum {
 
 struct fb_context_t {
     framebuffer_device_t  device;
-    //fd - which is returned on open
-    int fbFd;
 };
+
 
 static int fb_setSwapInterval(struct framebuffer_device_t* dev,
                               int interval)
@@ -73,6 +72,7 @@ static int fb_setSwapInterval(struct framebuffer_device_t* dev,
     if (property_interval >= 0)
         interval = property_interval;
 
+    fb_context_t* ctx = (fb_context_t*)dev;
     private_module_t* m = reinterpret_cast<private_module_t*>(
         dev->common.module);
     if (interval < dev->minSwapInterval || interval > dev->maxSwapInterval)
@@ -88,12 +88,10 @@ static int fb_post(struct framebuffer_device_t* dev, buffer_handle_t buffer)
         reinterpret_cast<private_module_t*>(dev->common.module);
     private_handle_t *hnd = static_cast<private_handle_t*>
         (const_cast<native_handle_t*>(buffer));
-    fb_context_t *ctx = reinterpret_cast<fb_context_t*>(dev);
-    const unsigned int offset = (unsigned int) (hnd->base -
-            m->framebuffer->base);
+    const size_t offset = hnd->base - m->framebuffer->base;
     m->info.activate = FB_ACTIVATE_VBL;
-    m->info.yoffset = (int)(offset / m->finfo.line_length);
-    if (ioctl(ctx->fbFd, FBIOPUT_VSCREENINFO, &m->info) == -1) {
+    m->info.yoffset = offset / m->finfo.line_length;
+    if (ioctl(m->framebuffer->fd, FBIOPUT_VSCREENINFO, &m->info) == -1) {
         ALOGE("%s: FBIOPUT_VSCREENINFO for primary failed, str: %s",
                 __FUNCTION__, strerror(errno));
         return -errno;
@@ -104,19 +102,13 @@ static int fb_post(struct framebuffer_device_t* dev, buffer_handle_t buffer)
 static int fb_compositionComplete(struct framebuffer_device_t* dev)
 {
     // TODO: Properly implement composition complete callback
-    if(!dev) {
-        return -1;
-    }
     glFinish();
 
     return 0;
 }
 
-int mapFrameBufferLocked(framebuffer_device_t *dev)
+int mapFrameBufferLocked(struct private_module_t* module)
 {
-    private_module_t* module =
-        reinterpret_cast<private_module_t*>(dev->common.module);
-    fb_context_t *ctx = reinterpret_cast<fb_context_t*>(dev);
     // already initialized...
     if (module->framebuffer) {
         return 0;
@@ -138,6 +130,8 @@ int mapFrameBufferLocked(framebuffer_device_t *dev)
     }
     if (fd < 0)
         return -errno;
+
+    memset(&module->commit, 0, sizeof(struct mdp_display_commit));
 
     struct fb_fix_screeninfo finfo;
     if (ioctl(fd, FBIOGET_FSCREENINFO, &finfo) == -1) {
@@ -208,8 +202,8 @@ int mapFrameBufferLocked(framebuffer_device_t *dev)
     }
 
     //adreno needs 4k aligned offsets. Max hole size is 4096-1
-    unsigned int size = roundUpToPageSize(info.yres * info.xres *
-                                               (info.bits_per_pixel/8));
+    int  size = roundUpToPageSize(info.yres * info.xres *
+                                                       (info.bits_per_pixel/8));
 
     /*
      * Request NUM_BUFFERS screens (at least 2 for page flipping)
@@ -230,13 +224,13 @@ int mapFrameBufferLocked(framebuffer_device_t *dev)
 
     //consider the included hole by 4k alignment
     uint32_t line_length = (info.xres * info.bits_per_pixel / 8);
-    info.yres_virtual = (uint32_t) ((size * numberOfBuffers) / line_length);
+    info.yres_virtual = (size * numberOfBuffers) / line_length;
 
     uint32_t flags = PAGE_FLIP;
 
     if (info.yres_virtual < ((size * 2) / line_length) ) {
         // we need at least 2 for page-flipping
-        info.yres_virtual = (int)(size / line_length);
+        info.yres_virtual = size / line_length;
         flags &= ~PAGE_FLIP;
         ALOGW("page flipping not supported (yres_virtual=%d, requested=%d)",
               info.yres_virtual, info.yres*2);
@@ -250,13 +244,12 @@ int mapFrameBufferLocked(framebuffer_device_t *dev)
     if (int(info.width) <= 0 || int(info.height) <= 0) {
         // the driver doesn't return that information
         // default to 160 dpi
-        info.width  = (uint32_t)(((float)(info.xres) * 25.4f)/160.0f + 0.5f);
-        info.height = (uint32_t)(((float)(info.yres) * 25.4f)/160.0f + 0.5f);
+        info.width  = ((info.xres * 25.4f)/160.0f + 0.5f);
+        info.height = ((info.yres * 25.4f)/160.0f + 0.5f);
     }
 
-    float xdpi = ((float)(info.xres) * 25.4f) / (float)info.width;
-    float ydpi = ((float)(info.yres) * 25.4f) / (float)info.height;
-
+    float xdpi = (info.xres * 25.4f) / info.width;
+    float ydpi = (info.yres * 25.4f) / info.height;
 #ifdef MSMFB_METADATA_GET
     struct msmfb_metadata metadata;
     memset(&metadata, 0 , sizeof(metadata));
@@ -266,7 +259,7 @@ int mapFrameBufferLocked(framebuffer_device_t *dev)
         close(fd);
         return -errno;
     }
-    float fps = (float)metadata.data.panel_frame_rate;
+    float fps  = metadata.data.panel_frame_rate;
 #else
     //XXX: Remove reserved field usage on all baselines
     //The reserved[3] field is used to store FPS by the driver.
@@ -327,60 +320,41 @@ int mapFrameBufferLocked(framebuffer_device_t *dev)
      * map the framebuffer
      */
 
+    int err;
     module->numBuffers = info.yres_virtual / info.yres;
     module->bufferMask = 0;
     //adreno needs page aligned offsets. Align the fbsize to pagesize.
-    unsigned int fbSize = roundUpToPageSize(finfo.line_length * info.yres)*
+    size_t fbSize = roundUpToPageSize(finfo.line_length * info.yres)*
                     module->numBuffers;
+    module->framebuffer = new private_handle_t(fd, fbSize,
+                                        private_handle_t::PRIV_FLAGS_USES_ION,
+                                        BUFFER_TYPE_UI,
+                                        module->fbFormat, info.xres, info.yres);
     void* vaddr = mmap(0, fbSize, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
     if (vaddr == MAP_FAILED) {
         ALOGE("Error mapping the framebuffer (%s)", strerror(errno));
         close(fd);
         return -errno;
     }
-    //store the framebuffer fd in the ctx
-    ctx->fbFd = fd;
-#ifdef MSMFB_METADATA_GET
-    memset(&metadata, 0 , sizeof(metadata));
-    metadata.op = metadata_op_get_ion_fd;
-    // get the ION fd for the framebuffer, as GPU needs ION fd
-    if (ioctl(fd, MSMFB_METADATA_GET, &metadata) == -1) {
-        ALOGE("Error getting ION fd (%s)", strerror(errno));
-        close(fd);
-        return -errno;
-    }
-    if(metadata.data.fbmem_ionfd < 0) {
-        ALOGE("Error: Ioctl returned invalid ION fd = %d",
-                                        metadata.data.fbmem_ionfd);
-        close(fd);
-        return -errno;
-    }
-    fd = metadata.data.fbmem_ionfd;
-#endif
-    // Create framebuffer handle using the ION fd
-    module->framebuffer = new private_handle_t(fd, fbSize,
-                                        private_handle_t::PRIV_FLAGS_USES_ION,
-                                        BUFFER_TYPE_UI,
-                                        module->fbFormat, info.xres, info.yres);
-    module->framebuffer->base = uint64_t(vaddr);
+    module->framebuffer->base = intptr_t(vaddr);
     memset(vaddr, 0, fbSize);
+    module->currentOffset = 0;
     //Enable vsync
     int enable = 1;
-    ioctl(ctx->fbFd, MSMFB_OVERLAY_VSYNC_CTRL, &enable);
+    ioctl(module->framebuffer->fd, MSMFB_OVERLAY_VSYNC_CTRL,
+             &enable);
     return 0;
 }
 
-static int mapFrameBuffer(framebuffer_device_t *dev)
+static int mapFrameBuffer(struct private_module_t* module)
 {
     int err = -1;
     char property[PROPERTY_VALUE_MAX];
     if((property_get("debug.gralloc.map_fb_memory", property, NULL) > 0) &&
        (!strncmp(property, "1", PROPERTY_VALUE_MAX ) ||
         (!strncasecmp(property,"true", PROPERTY_VALUE_MAX )))) {
-        private_module_t* module =
-            reinterpret_cast<private_module_t*>(dev->common.module);
         pthread_mutex_lock(&module->lock);
-        err = mapFrameBufferLocked(dev);
+        err = mapFrameBufferLocked(module);
         pthread_mutex_unlock(&module->lock);
     }
     return err;
@@ -392,11 +366,6 @@ static int fb_close(struct hw_device_t *dev)
 {
     fb_context_t* ctx = (fb_context_t*)dev;
     if (ctx) {
-#ifdef MSMFB_METADATA_GET
-        if(ctx->fbFd >=0) {
-            close(ctx->fbFd);
-        }
-#endif
         //Hack until fbdev is removed. Framework could close this causing hwc a
         //pain.
         //free(ctx);
@@ -432,8 +401,8 @@ int fb_device_open(hw_module_t const* module, const char* name,
         dev->device.setUpdateRect   = 0;
         dev->device.compositionComplete = fb_compositionComplete;
 
-        status = mapFrameBuffer((framebuffer_device_t*)dev);
-        private_module_t* m = (private_module_t*)dev->device.common.module;
+        private_module_t* m = (private_module_t*)module;
+        status = mapFrameBuffer(m);
         if (status >= 0) {
             int stride = m->finfo.line_length / (m->info.bits_per_pixel >> 3);
             const_cast<uint32_t&>(dev->device.flags) = 0;

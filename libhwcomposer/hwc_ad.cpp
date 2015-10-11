@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2013-2014 The Linux Foundation. All rights reserved.
+* Copyright (c) 2013 The Linux Foundation. All rights reserved.
 *
 * Redistribution and use in source and binary forms, with or without
 * modification, are permitted provided that the following conditions are
@@ -50,7 +50,7 @@ static void adWrite(const int& value) {
     if(adFd >= 0) {
         char opStr[4] = "";
         snprintf(opStr, sizeof(opStr), "%d", value);
-        ssize_t ret = write(adFd, opStr, strlen(opStr));
+        int ret = write(adFd, opStr, strlen(opStr));
         if(ret < 0) {
             ALOGE("%s: Failed to write %d with error %s",
                     __func__, value, strerror(errno));
@@ -75,15 +75,11 @@ static int adRead() {
             "/sys/class/graphics/fb%d/ad", wbFbNum);
     int adFd = open(wbFbPath, O_RDONLY);
     if(adFd >= 0) {
-        char opStr[4];
-        ssize_t bytesRead = read(adFd, opStr, sizeof(opStr) - 1);
-        if(bytesRead > 0) {
-            opStr[bytesRead] = '\0';
+        char opStr[4] = {'\0'};
+        if(read(adFd, opStr, strlen(opStr)) >= 0) {
             //Should return -1, 0 or 1
             ret = atoi(opStr);
             ALOGD_IF(DEBUG, "%s: Read %d from ad", __func__, ret);
-        } else if(bytesRead == 0) {
-            ALOGE("%s: ad node empty", __func__);
         } else {
             ALOGE("%s: Read from ad node failed with error %s", __func__,
                     strerror(errno));
@@ -133,8 +129,7 @@ void AssertiveDisplay::markDoable(hwc_context_t *ctx,
         int nYuvIndex = ctx->listStats[HWC_DISPLAY_PRIMARY].yuvIndices[0];
         const hwc_layer_1_t* layer = &list->hwLayers[nYuvIndex];
         private_handle_t *hnd = (private_handle_t *)layer->handle;
-        qdutils::MDPVersion& mdpHw =  qdutils::MDPVersion::getInstance();
-        if(hnd && hnd->width <= (int) mdpHw.getMaxMixerWidth()) {
+        if(hnd && hnd->width <= qdutils::MAX_DISPLAY_DIM) {
             mDoable = true;
         }
     }
@@ -161,12 +156,9 @@ bool AssertiveDisplay::prepare(hwc_context_t *ctx,
         return false;
     }
 
-    Overlay::PipeSpecs pipeSpecs;
-    pipeSpecs.formatClass = Overlay::FORMAT_YUV;
-    pipeSpecs.dpy = overlay::Overlay::DPY_WRITEBACK;
-    pipeSpecs.fb = false;
-
-    ovutils::eDest dest = ctx->mOverlay->getPipe(pipeSpecs);
+    ovutils::eDest dest = ctx->mOverlay->nextPipe(ovutils::OV_MDP_PIPE_VG,
+            overlay::Overlay::DPY_WRITEBACK, Overlay::MIXER_DEFAULT,
+            Overlay::FORMAT_YUV);
     if(dest == OV_INVALID) {
         ALOGE("%s failed: No VG pipe available", __func__);
         mDoable = false;
@@ -189,8 +181,7 @@ bool AssertiveDisplay::prepare(hwc_context_t *ctx,
         return false;
     }
 
-    int tmpW, tmpH;
-    size_t size;
+    int tmpW, tmpH, size;
     int format = ovutils::getHALFormat(wb->getOutputFormat());
     if(format < 0) {
         ALOGE("%s invalid format %d", __func__, format);
@@ -201,7 +192,7 @@ bool AssertiveDisplay::prepare(hwc_context_t *ctx,
     size = getBufferSizeAndDimensions(hnd->width, hnd->height,
                 format, tmpW, tmpH);
 
-    if(!wb->configureMemory((uint32_t)size)) {
+    if(!wb->configureMemory(size)) {
         ALOGE("%s: config memory failed", __func__);
         mDoable = false;
         return false;
@@ -213,7 +204,7 @@ bool AssertiveDisplay::prepare(hwc_context_t *ctx,
                 ovutils::OV_MDP_SECURE_OVERLAY_SESSION);
     }
 
-    PipeArgs parg(mdpFlags, whf, ZORDER_0,
+    PipeArgs parg(mdpFlags, whf, ZORDER_0, IS_FG_OFF,
             ROT_FLAGS_NONE);
     hwc_rect_t dst = crop; //input same as output
 
@@ -265,12 +256,12 @@ bool AssertiveDisplay::draw(hwc_context_t *ctx, int fd, uint32_t offset) {
     return true;
 }
 
-int AssertiveDisplay::getDstFd() const {
+int AssertiveDisplay::getDstFd(hwc_context_t *ctx) const {
     overlay::Writeback *wb = overlay::Writeback::getInstance();
     return wb->getDstFd();
 }
 
-uint32_t AssertiveDisplay::getDstOffset() const {
+uint32_t AssertiveDisplay::getDstOffset(hwc_context_t *ctx) const {
     overlay::Writeback *wb = overlay::Writeback::getInstance();
     return wb->getOffset();
 }

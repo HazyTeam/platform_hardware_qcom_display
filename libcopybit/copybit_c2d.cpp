@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2008 The Android Open Source Project
- * Copyright (c) 2010-2014, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2010-2013, The Linux Foundation. All rights reserved.
  *
  * Not a Contribution, Apache license notifications and license are retained
  * for attribution purposes only.
@@ -35,6 +35,8 @@
 
 #include <EGL/eglplatform.h>
 #include <cutils/native_handle.h>
+#include <cutils/ashmem.h>
+#include <linux/ashmem.h>
 #include <gralloc_priv.h>
 
 #include <copybit.h>
@@ -78,8 +80,8 @@ C2D_STATUS (*LINK_c2dWaitTimestamp)( c2d_ts_handle timestamp );
 
 C2D_STATUS (*LINK_c2dDestroySurface)( uint32 surface_id );
 
-C2D_STATUS (*LINK_c2dMapAddr) ( int mem_fd, void * hostptr, size_t len,
-                                size_t offset, uint32 flags, void ** gpuaddr);
+C2D_STATUS (*LINK_c2dMapAddr) ( int mem_fd, void * hostptr, uint32 len,
+                                uint32 offset, uint32 flags, void ** gpuaddr);
 
 C2D_STATUS (*LINK_c2dUnMapAddr) ( void * gpuaddr);
 
@@ -145,7 +147,7 @@ struct copybit_context_t {
     alloc_data temp_src_buffer;
     alloc_data temp_dst_buffer;
     unsigned int dst[NUM_SURFACE_TYPES]; // dst surfaces
-    uintptr_t mapped_gpu_addr[MAX_SURFACES]; // GPU addresses mapped inside copybit
+    unsigned int mapped_gpu_addr[MAX_SURFACES]; // GPU addresses mapped inside copybit
     int blit_rgb_count;         // Total RGB surfaces being blit
     int blit_yuv_2_plane_count; // Total 2 plane YUV surfaces being
     int blit_yuv_3_plane_count; // Total 3 plane YUV  surfaces being blit
@@ -180,8 +182,8 @@ struct yuvPlaneInfo {
     int yStride;       //luma stride
     int plane1_stride;
     int plane2_stride;
-    size_t plane1_offset;
-    size_t plane2_offset;
+    int plane1_offset;
+    int plane2_offset;
 };
 
 /**
@@ -337,11 +339,10 @@ int c2diGetBpp(int32 colorformat)
     return c2dBpp;
 }
 
-static size_t c2d_get_gpuaddr(copybit_context_t* ctx,
+static uint32 c2d_get_gpuaddr(copybit_context_t* ctx,
                               struct private_handle_t *handle, int &mapped_idx)
 {
-    uint32 memtype;
-    size_t *gpuaddr = 0;
+    uint32 memtype, *gpuaddr = 0;
     C2D_STATUS rc;
     int freeindex = 0;
     bool mapaddr = false;
@@ -378,11 +379,11 @@ static size_t c2d_get_gpuaddr(copybit_context_t* ctx,
         if (rc == C2D_STATUS_OK) {
             // We have mapped the GPU address inside copybit. We need to unmap
             // this address after the blit. Store this address
-            ctx->mapped_gpu_addr[freeindex] = (size_t)gpuaddr;
+            ctx->mapped_gpu_addr[freeindex] = (uint32) gpuaddr;
             mapped_idx = freeindex;
         }
     }
-    return (size_t)gpuaddr;
+    return (uint32) gpuaddr;
 }
 
 static void unmap_gpuaddr(copybit_context_t* ctx, int mapped_idx)
@@ -503,7 +504,7 @@ static int set_image(copybit_context_t* ctx, uint32 surfaceId,
     struct private_handle_t* handle = (struct private_handle_t*)rhs->handle;
     C2D_SURFACE_TYPE surfaceType;
     int status = COPYBIT_SUCCESS;
-    uint64_t gpuaddr = 0;
+    uint32 gpuaddr = 0;
     int c2d_format;
     mapped_idx = -1;
 
@@ -547,7 +548,7 @@ static int set_image(copybit_context_t* ctx, uint32 surfaceId,
             ((flags & FLAGS_PREMULTIPLIED_ALPHA) ? C2D_FORMAT_PREMULTIPLIED : 0);
         surfaceDef.width = rhs->w;
         surfaceDef.height = rhs->h;
-        int aligned_width = ALIGN((int)surfaceDef.width,32);
+        int aligned_width = ALIGN(surfaceDef.width,32);
         surfaceDef.stride = (aligned_width * c2diGetBpp(surfaceDef.format))>>3;
 
         if(LINK_c2dUpdateSurface( surfaceId,C2D_TARGET | C2D_SOURCE, surfaceType,
@@ -735,8 +736,7 @@ static void set_rects(struct copybit_context_t *ctx,
        (ctx->trg_transform & C2D_TARGET_ROTATE_180)) {
         /* target rotation is 270 */
         c2dObject->target_rect.x        = (dst->t)<<16;
-        c2dObject->target_rect.y        = ctx->fb_width?
-                (ALIGN(ctx->fb_width,32)- dst->r):dst->r;
+        c2dObject->target_rect.y        = ctx->fb_width?(ALIGN(ctx->fb_width,32)- dst->r):dst->r;
         c2dObject->target_rect.y        = c2dObject->target_rect.y<<16;
         c2dObject->target_rect.height   = ((dst->r) - (dst->l))<<16;
         c2dObject->target_rect.width    = ((dst->b) - (dst->t))<<16;
@@ -749,8 +749,7 @@ static void set_rects(struct copybit_context_t *ctx,
     } else if(ctx->trg_transform & C2D_TARGET_ROTATE_180) {
         c2dObject->target_rect.y        = ctx->fb_height?(ctx->fb_height - dst->b):dst->b;
         c2dObject->target_rect.y        = c2dObject->target_rect.y<<16;
-        c2dObject->target_rect.x        = ctx->fb_width?
-                (ALIGN(ctx->fb_width,32) - dst->r):dst->r;
+        c2dObject->target_rect.x        = ctx->fb_width?(ALIGN(ctx->fb_width,32) - dst->r):dst->r;
         c2dObject->target_rect.x        = c2dObject->target_rect.x<<16;
         c2dObject->target_rect.height   = ((dst->b) - (dst->t))<<16;
         c2dObject->target_rect.width    = ((dst->r) - (dst->l))<<16;
@@ -962,9 +961,9 @@ static void populate_buffer_info(struct copybit_image_t const *img, bufferInfo& 
 /* Function to get the required size for a particular format, inorder for C2D to perform
  * the blit operation.
  */
-static int get_size(const bufferInfo& info)
+static size_t get_size(const bufferInfo& info)
 {
-    int size = 0;
+    size_t size = 0;
     int w = info.width;
     int h = info.height;
     int aligned_w = ALIGN(w, 32);
@@ -1074,7 +1073,8 @@ static void delete_handle(private_handle_t *handle)
     }
 }
 
-static bool need_to_execute_draw(eC2DFlags flags)
+static bool need_to_execute_draw(struct copybit_context_t* ctx,
+                                          eC2DFlags flags)
 {
     if (flags & FLAGS_TEMP_SRC_DST) {
         return true;
@@ -1179,7 +1179,7 @@ static int stretch_copybit_internal(
         return COPYBIT_FAILURE;
     }
     if (need_temp_dst) {
-        if (get_size(dst_info) != (int) ctx->temp_dst_buffer.size) {
+        if (get_size(dst_info) != ctx->temp_dst_buffer.size) {
             free_temp_buffer(ctx->temp_dst_buffer);
             // Create a temp buffer and set that as the destination.
             if (COPYBIT_FAILURE == get_temp_buffer(dst_info, ctx->temp_dst_buffer)) {
@@ -1191,7 +1191,7 @@ static int stretch_copybit_internal(
         dst_hnd->fd = ctx->temp_dst_buffer.fd;
         dst_hnd->size = ctx->temp_dst_buffer.size;
         dst_hnd->flags = ctx->temp_dst_buffer.allocType;
-        dst_hnd->base = (uintptr_t)(ctx->temp_dst_buffer.base);
+        dst_hnd->base = (int)(ctx->temp_dst_buffer.base);
         dst_hnd->offset = ctx->temp_dst_buffer.offset;
         dst_hnd->gpuaddr = 0;
         dst_image.handle = dst_hnd;
@@ -1261,7 +1261,7 @@ static int stretch_copybit_internal(
         return COPYBIT_FAILURE;
     }
     if (need_temp_src) {
-        if (get_size(src_info) != (int) ctx->temp_src_buffer.size) {
+        if (get_size(src_info) != ctx->temp_src_buffer.size) {
             free_temp_buffer(ctx->temp_src_buffer);
             // Create a temp buffer and set that as the destination.
             if (COPYBIT_SUCCESS != get_temp_buffer(src_info,
@@ -1276,7 +1276,7 @@ static int stretch_copybit_internal(
         src_hnd->fd = ctx->temp_src_buffer.fd;
         src_hnd->size = ctx->temp_src_buffer.size;
         src_hnd->flags = ctx->temp_src_buffer.allocType;
-        src_hnd->base = (uintptr_t)(ctx->temp_src_buffer.base);
+        src_hnd->base = (int)(ctx->temp_src_buffer.base);
         src_hnd->offset = ctx->temp_src_buffer.offset;
         src_hnd->gpuaddr = 0;
         src_image.handle = src_hnd;
@@ -1360,7 +1360,7 @@ static int stretch_copybit_internal(
 
     // Check if we need to perform an early draw-finish.
     flags |= (need_temp_dst || need_temp_src) ? FLAGS_TEMP_SRC_DST : 0;
-    if (need_to_execute_draw((eC2DFlags)flags))
+    if (need_to_execute_draw(ctx, (eC2DFlags)flags))
     {
         finish_copybit(dev);
     }
@@ -1394,11 +1394,8 @@ static int stretch_copybit_internal(
 }
 
 static int set_sync_copybit(struct copybit_device_t *dev,
-    int /*acquireFenceFd*/)
+    int acquireFenceFd)
 {
-    if(!dev)
-        return -EINVAL;
-
     return 0;
 }
 
@@ -1441,12 +1438,9 @@ static int blit_copybit(
 static int fill_color(struct copybit_device_t *dev,
                       struct copybit_image_t const *dst,
                       struct copybit_rect_t const *rect,
-                      uint32_t /*color*/)
+                      uint32_t color)
 {
     // TODO: Implement once c2d driver supports color fill
-    if(!dev || !dst || !rect)
-       return -EINVAL;
-
     return -EINVAL;
 }
 
@@ -1514,13 +1508,10 @@ static int open_copybit(const struct hw_module_t* module, const char* name,
                         struct hw_device_t** device)
 {
     int status = COPYBIT_SUCCESS;
-    if (strcmp(name, COPYBIT_HARDWARE_COPYBIT0)) {
-        return COPYBIT_FAILURE;
-    }
-
     C2D_RGB_SURFACE_DEF surfDefinition = {0};
     C2D_YUV_SURFACE_DEF yuvSurfaceDef = {0} ;
     struct copybit_context_t *ctx;
+    char fbName[64];
 
     ctx = (struct copybit_context_t *)malloc(sizeof(struct copybit_context_t));
     if(!ctx) {

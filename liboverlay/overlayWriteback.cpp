@@ -101,12 +101,8 @@ bool Writeback::startSession() {
 
 bool Writeback::stopSession() {
     if(mFd.valid()) {
-        if(!Overlay::displayCommit(mFd.getFD())) {
-            ALOGE("%s: displayCommit failed", __func__);
-            return false;
-        }
         if(!mdp_wrapper::wbStopTerminate(mFd.getFD())) {
-            ALOGE("%s: wbStopTerminate failed", __func__);
+            ALOGE("%s failed", __func__);
             return false;
         }
     } else {
@@ -263,12 +259,9 @@ void Writeback::clear() {
 bool Writeback::getDump(char *buf, size_t len) {
     if(sWb) {
         utils::getDump(buf, len, "WBData", sWb->mFbData);
-        char outputBufferInfo[256];
-        snprintf(outputBufferInfo, sizeof(outputBufferInfo),
-                "OutputBuffer xres=%d yres=%d format=%s\n\n",
-                sWb->getWidth(), sWb->getHeight(),
-                utils::getFormatString(sWb->getOutputFormat()));
-        strlcat(buf, outputBufferInfo, len);
+        char str[4] = {'\0'};
+        snprintf(str, 4, "\n");
+        strlcat(buf, str, len);
         return true;
     }
     return false;

@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2008 The Android Open Source Project
- * Copyright (c) 2010-2014, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2010-2013, The Linux Foundation. All rights reserved.
  * Not a Contribution, Apache license notifications and license are retained
  * for attribution purposes only.
  *
@@ -17,7 +17,6 @@
  * limitations under the License.
 */
 
-#include <math.h>
 #include "overlayUtils.h"
 #include "overlayRotator.h"
 
@@ -38,8 +37,6 @@
 namespace ovutils = overlay::utils;
 
 namespace overlay {
-using namespace utils;
-
 MdssRot::MdssRot() {
     reset();
     init();
@@ -51,16 +48,8 @@ bool MdssRot::enabled() const { return mEnabled; }
 
 void MdssRot::setRotations(uint32_t flags) { mRotInfo.flags |= flags; }
 
-int MdssRot::getSrcMemId() const {
-    return mRotData.data.memory_id;
-}
-
 int MdssRot::getDstMemId() const {
     return mRotData.dst_data.memory_id;
-}
-
-uint32_t MdssRot::getSrcOffset() const {
-    return mRotData.data.offset;
 }
 
 uint32_t MdssRot::getDstOffset() const {
@@ -72,40 +61,25 @@ uint32_t MdssRot::getDstFormat() const {
     return mRotInfo.src.format;
 }
 
-utils::Whf MdssRot::getDstWhf() const {
-    //For Mdss dst_rect itself represents buffer dimensions. We ignore actual
-    //aligned values during buffer allocation. Also the driver overwrites the
-    //src.format field if destination format is different.
-    //This implementation detail makes it possible to retrieve w,h even before
-    //buffer allocation, which happens in queueBuffer.
-    return utils::Whf(mRotInfo.dst_rect.w, mRotInfo.dst_rect.h,
-            mRotInfo.src.format);
-}
-
-utils::Dim MdssRot::getDstDimensions() const {
-    return utils::Dim(mRotInfo.dst_rect.x, mRotInfo.dst_rect.y,
-            mRotInfo.dst_rect.w, mRotInfo.dst_rect.h);
-}
-
 uint32_t MdssRot::getSessId() const { return mRotInfo.id; }
-
-void MdssRot::save() {
-    mLSRotInfo = mRotInfo;
-}
-
-bool MdssRot::rotConfChanged() const {
-    // 0 means same
-    if(0 == ::memcmp(&mRotInfo, &mLSRotInfo,
-                     sizeof (mdp_overlay))) {
-        return false;
-    }
-    return true;
-}
 
 bool MdssRot::init() {
     if(!utils::openDev(mFd, 0, Res::fbPath, O_RDWR)) {
         ALOGE("MdssRot failed to init fb0");
         return false;
+    }
+    return true;
+}
+
+bool MdssRot::isRotBufReusable(const utils::eMdpFlags& flags) {
+    if((mRotInfo.flags != 0) &&
+      (((mRotInfo.flags & ovutils::OV_MDP_SECURE_OVERLAY_SESSION) &&
+         !(flags & ovutils::OV_MDP_SECURE_OVERLAY_SESSION)) ||
+      (!(mRotInfo.flags & ovutils::OV_MDP_SECURE_OVERLAY_SESSION) &&
+         (flags & ovutils::OV_MDP_SECURE_OVERLAY_SESSION)))) {
+          ALOGE("%s: Rotator buffer usage flag is changed, failing",
+                     __FUNCTION__);
+          return false;
     }
     return true;
 }
@@ -119,15 +93,19 @@ void MdssRot::setSource(const overlay::utils::Whf& awhf) {
 }
 
 void MdssRot::setCrop(const utils::Dim& crop) {
+
     mRotInfo.src_rect.x = crop.x;
     mRotInfo.src_rect.y = crop.y;
     mRotInfo.src_rect.w = crop.w;
     mRotInfo.src_rect.h = crop.h;
+
+    mRotInfo.dst_rect.x = 0;
+    mRotInfo.dst_rect.y = 0;
+    mRotInfo.dst_rect.w = crop.w;
+    mRotInfo.dst_rect.h = crop.h;
 }
 
-void MdssRot::setDownscale(int downscale) {
-    mDownscale = downscale;
-}
+void MdssRot::setDownscale(int ds) {}
 
 void MdssRot::setFlags(const utils::eMdpFlags& flags) {
     mRotInfo.flags = flags;
@@ -151,28 +129,7 @@ void MdssRot::doTransform() {
 }
 
 bool MdssRot::commit() {
-    Dim adjCrop(mRotInfo.src_rect.x,mRotInfo.src_rect.y,
-            mRotInfo.src_rect.w,mRotInfo.src_rect.h);
-    adjCrop = getFormatAdjustedCrop(adjCrop, mRotInfo.src.format,
-            mRotInfo.flags & utils::OV_MDP_DEINTERLACE);
-    adjCrop = getDownscaleAdjustedCrop(adjCrop, mDownscale);
-
-    mRotInfo.src_rect.x = adjCrop.x;
-    mRotInfo.src_rect.y = adjCrop.y;
-    mRotInfo.src_rect.w = adjCrop.w;
-    mRotInfo.src_rect.h = adjCrop.h;
-
-    mRotInfo.dst_rect.x = 0;
-    mRotInfo.dst_rect.y = 0;
-    mRotInfo.dst_rect.w = mDownscale ?
-            mRotInfo.src_rect.w / mDownscale : mRotInfo.src_rect.w;
-    mRotInfo.dst_rect.h = mDownscale ?
-            mRotInfo.src_rect.h / mDownscale : mRotInfo.src_rect.h;
-    //Clear for next round
-    mDownscale = 0;
-
     doTransform();
-
     mRotInfo.flags |= MDSS_MDP_ROT_ONLY;
     mEnabled = true;
     if(!overlay::mdp_wrapper::setOverlay(mFd.getFD(), mRotInfo)) {
@@ -185,10 +142,7 @@ bool MdssRot::commit() {
 }
 
 bool MdssRot::queueBuffer(int fd, uint32_t offset) {
-    if(enabled() and (not isRotCached(fd,offset))) {
-        int prev_fd = getSrcMemId();
-        uint32_t prev_offset = getSrcOffset();
-
+    if(enabled()) {
         mRotData.data.memory_id = fd;
         mRotData.data.offset = offset;
 
@@ -199,17 +153,14 @@ bool MdssRot::queueBuffer(int fd, uint32_t offset) {
 
         mRotData.dst_data.offset =
                 mMem.mRotOffset[mMem.mCurrIndex];
+        mMem.mCurrIndex =
+                (mMem.mCurrIndex + 1) % mMem.mem.numBufs();
 
         if(!overlay::mdp_wrapper::play(mFd.getFD(), mRotData)) {
             ALOGE("MdssRot play failed!");
             dump();
-            mRotData.data.memory_id = prev_fd;
-            mRotData.data.offset = prev_offset;
             return false;
         }
-        save();
-        mMem.mCurrIndex =
-                (mMem.mCurrIndex + 1) % mMem.mem.numBufs();
     }
     return true;
 }
@@ -287,14 +238,12 @@ bool MdssRot::close() {
 
 void MdssRot::reset() {
     ovutils::memset0(mRotInfo);
-    ovutils::memset0(mLSRotInfo);
     ovutils::memset0(mRotData);
     mRotData.data.memory_id = -1;
     mRotInfo.id = MSMFB_NEW_REQUEST;
     ovutils::memset0(mMem.mRotOffset);
     mMem.mCurrIndex = 0;
     mOrientation = utils::OVERLAY_TRANSFORM_0;
-    mDownscale = 0;
 }
 
 void MdssRot::dump() const {
@@ -328,103 +277,20 @@ void MdssRot::getDump(char *buf, size_t len) const {
 // Calculate the compressed o/p buffer size for BWC
 uint32_t MdssRot::calcCompressedBufSize(const ovutils::Whf& destWhf) {
     uint32_t bufSize = 0;
-    //Worst case alignments
     int aWidth = ovutils::align(destWhf.w, 64);
     int aHeight = ovutils::align(destWhf.h, 4);
-    /*
-       Format           |   RAU size (width x height)
-       ----------------------------------------------
-       ARGB             |       32 pixel x 4 line
-       RGB888           |       32 pixel x 4 line
-       Y (Luma)         |       64 pixel x 4 line
-       CRCB 420         |       32 pixel x 2 line
-       CRCB 422 H2V1    |       32 pixel x 4 line
-       CRCB 422 H1V2    |       64 pixel x 2 line
+    int rau_cnt = aWidth/64;
+    int stride0 = (64 * 4 * rau_cnt) + rau_cnt/8;
+    int stride1 = ((64 * 2 * rau_cnt) + rau_cnt/8) * 2;
+    int stride0_off = (aHeight/4);
+    int stride1_off = (aHeight/2);
 
-       Metadata requirements:-
-       1 byte meta data for every 8 RAUs
-       2 byte meta data per RAU
-     */
-
-    //These blocks attempt to allocate for the worst case in each of the
-    //respective format classes, yuv/rgb. The table above is for reference
-    if(utils::isYuv(destWhf.format)) {
-        int yRauCount = aWidth / 64; //Y
-        int cRauCount = aWidth / 32; //C
-        int yStride = (64 * 4 * yRauCount) + alignup(yRauCount, 8) / 8;
-        int cStride = ((32 * 2 * cRauCount) + alignup(cRauCount, 8) / 8) * 2;
-        int yStrideOffset = (aHeight / 4);
-        int cStrideOffset = (aHeight / 2);
-        bufSize = (yStride * yStrideOffset + cStride * cStrideOffset) +
-                (yRauCount * yStrideOffset * 2) +
-                (cRauCount * cStrideOffset * 2) * 2;
-        ALOGD_IF(DEBUG_MDSS_ROT, "%s:YUV Y RAU Count = %d C RAU Count = %d",
-                __FUNCTION__, yRauCount, cRauCount);
-    } else {
-        int rauCount = aWidth / 32;
-        //Single plane
-        int stride = (32 * 4 * rauCount) + alignup(rauCount, 8) / 8;
-        int strideOffset = (aHeight / 4);
-        bufSize = (stride * strideOffset * 4 /*bpp*/) +
-            (rauCount * strideOffset * 2);
-        ALOGD_IF(DEBUG_MDSS_ROT, "%s:RGB RAU count = %d", __FUNCTION__,
-                rauCount);
-    }
-
-    ALOGD_IF(DEBUG_MDSS_ROT, "%s: aligned width = %d, aligned height = %d "
-            "Buf Size = %d", __FUNCTION__, aWidth, aHeight, bufSize);
-
+    //New o/p size for BWC
+    bufSize = (stride0 * stride0_off + stride1 * stride1_off) +
+                (rau_cnt * 2 * (stride0_off + stride1_off));
+    ALOGD_IF(DEBUG_MDSS_ROT, "%s: width = %d, height = %d raucount = %d"
+         "opBufSize = %d ", __FUNCTION__, aWidth, aHeight, rau_cnt, bufSize);
     return bufSize;
-}
-
-int MdssRot::getDownscaleFactor(const int& srcW, const int& srcH,
-        const int& dstW, const int& dstH, const uint32_t& mdpFormat,
-        const bool& isInterlaced) {
-    if(not srcW or not srcH or not dstW or not dstH or isInterlaced) return 0;
-
-    Dim crop(0, 0, srcW, srcH);
-    Dim adjCrop = getFormatAdjustedCrop(crop, mdpFormat,
-            false /*isInterlaced */);
-
-    uint32_t downscale = min((adjCrop.w / dstW), (adjCrop.h / dstH));
-    //Reduced to a power of 2
-    downscale = (uint32_t) powf(2.0f, floorf(log2f((float)downscale)));
-
-    if(downscale < 2 or downscale > 32) return 0;
-
-    //Allow only 1 line or pixel to be chopped off since the source needs to
-    //be aligned to downscale. Progressively try with smaller downscale to see
-    //if we can satisfy the threshold
-    //For YUV the loop shouldnt be needed, unless in exceptional cases
-    Dim dsAdjCrop = getDownscaleAdjustedCrop(adjCrop, downscale);
-    while(downscale > 2 and (adjCrop.w > dsAdjCrop.w or
-            adjCrop.h > dsAdjCrop.h)) {
-        downscale /= 2;
-        dsAdjCrop = getDownscaleAdjustedCrop(adjCrop, downscale);
-    }
-
-    if(not dsAdjCrop.w or not dsAdjCrop.h) return 0;
-    return downscale;
-}
-
-Dim MdssRot::getFormatAdjustedCrop(const Dim& crop,
-            const uint32_t& mdpFormat, const bool& isInterlaced) {
-    Dim adjCrop = crop;
-    if (isYuv(mdpFormat)) {
-        normalizeCrop(adjCrop.x, adjCrop.w);
-        normalizeCrop(adjCrop.y, adjCrop.h);
-        // For interlaced, crop.h should be 4-aligned
-        if (isInterlaced and (adjCrop.h % 4))
-            adjCrop.h = aligndown(adjCrop.h, 4);
-    }
-    return adjCrop;
-}
-
-Dim MdssRot::getDownscaleAdjustedCrop(const Dim& crop,
-        const uint32_t& downscale) {
-    uint32_t alignedSrcW = aligndown(crop.w, downscale * 2);
-    uint32_t alignedSrcH = aligndown(crop.h, downscale * 2);
-    return Dim(crop.x, crop.y, alignedSrcW, alignedSrcH);
 }
 
 } // namespace overlay

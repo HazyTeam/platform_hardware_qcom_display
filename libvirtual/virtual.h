@@ -27,40 +27,41 @@
 * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#ifndef HWC_AD_H
-#define HWC_AD_H
 
-#include <overlayUtils.h>
-#include <hwc_utils.h>
+#ifndef HWC_VIRTUAL_DISPLAY_H
+#define HWC_VIRTUAL_DISPLAY_H
+
+#include <linux/fb.h>
 
 struct hwc_context_t;
 
 namespace qhwc {
 
-class AssertiveDisplay {
+class VirtualDisplay
+{
 public:
-    AssertiveDisplay(hwc_context_t *ctx);
-    void markDoable(hwc_context_t *ctx, const hwc_display_contents_1_t* list);
-    bool prepare(hwc_context_t *ctx, const hwc_rect_t& crop,
-            const overlay::utils::Whf& whf,
-            const private_handle_t *hnd);
-    bool draw(hwc_context_t *ctx, int fd, uint32_t offset);
-    //Resets a few members on each draw round
-    void reset() { mDoable = false;
-            mDest = overlay::utils::OV_INVALID;
+    VirtualDisplay(hwc_context_t* ctx);
+    ~VirtualDisplay();
+    int  configure();
+    void getAttributes(uint32_t& width, uint32_t& height);
+    int  teardown();
+    bool isConnected() {
+        return  mHwcContext->dpyAttr[HWC_DISPLAY_VIRTUAL].connected;
     }
-    bool isDoable() const { return mDoable; }
-    int getDstFd(hwc_context_t *ctx) const;
-    uint32_t getDstOffset(hwc_context_t *ctx) const;
-
 private:
-    bool mDoable;
-    bool mTurnedOff;
-    //State of feature existence on certain devices and configs.
-    bool mFeatureEnabled;
-    overlay::utils::eDest mDest;
-    void turnOffAD();
-};
+    bool openFrameBuffer();
+    bool closeFrameBuffer();
+    bool isSinkSecure();
+    void setAttributes();
+    void initResolution(uint32_t &extW, uint32_t &extH);
+    void setToPrimary(uint32_t maxArea, uint32_t priW, uint32_t priH,
+                      uint32_t &extW, uint32_t &extH);
+    void setDownScaleMode(uint32_t maxArea);
 
-}
-#endif
+    int mFd;
+    hwc_context_t *mHwcContext;
+    fb_var_screeninfo mVInfo;
+};
+}; //qhwc
+// ---------------------------------------------------------------------------
+#endif //HWC_VIRTUAL_DISPLAY_H

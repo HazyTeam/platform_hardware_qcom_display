@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -30,17 +30,20 @@
 #ifndef _QDMETADATA_H
 #define _QDMETADATA_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #define MAX_IGC_LUT_ENTRIES 256
+#define MAX_VFM_DATA_SIZE   64 //bytes per data buffer
+#define MAX_VFM_DATA_COUNT  16 //number of data buffers
 
-enum ColorSpace_t{
-    ITU_R_601,
-    ITU_R_601_FR,
-    ITU_R_709,
-};
+/* This macro finds the index corresponding to a type */
+/* This is equivalent to indx = LOG_2(type) */
+inline int32_t getVfmDataIdx(int32_t type){
+    int32_t indx = 0, x = type;
+    while( x >> 1) {
+        x = (x >> 1);
+        indx++;
+    }
+    return indx;
+}
 
 struct HSICData_t {
     int32_t hue;
@@ -67,28 +70,27 @@ struct BufferDim_t {
     int32_t sliceHeight;
 };
 
+struct VfmData_t {
+    int32_t dataType;
+    char    data[MAX_VFM_DATA_SIZE];
+};
+
 struct MetaData_t {
     int32_t operation;
     int32_t interlaced;
-    struct BufferDim_t bufferDim;
-    struct HSICData_t hsicData;
+    BufferDim_t bufferDim;
+    HSICData_t hsicData;
     int32_t sharpness;
     int32_t video_interface;
-    struct IGCData_t igcData;
-    struct Sharp2Data_t Sharp2Data;
+    IGCData_t igcData;
+    Sharp2Data_t Sharp2Data;
     int64_t timestamp;
+    int32_t vfmDataBitMap;
+    VfmData_t vfmData[MAX_VFM_DATA_COUNT];
     uint32_t refreshrate;
-    enum ColorSpace_t colorSpace;
-     /* Gralloc sets PRIV_SECURE_BUFFER flag to inform that the buffers are from
-      * ION_SECURE. which should not be mapped. However, for GPU post proc
-      * feature, GFX needs to map this buffer, in the client context and in SF
-      * context, it should not. Hence to differentiate, add this metadata field
-      * for clients to set, and GPU will to read and know when to map the
-      * SECURE_BUFFER(ION) */
-    int32_t mapSecureBuffer;
 };
 
-enum DispParamType {
+typedef enum {
     PP_PARAM_HSIC       = 0x0001,
     PP_PARAM_SHARPNESS  = 0x0002,
     PP_PARAM_INTERLACED = 0x0004,
@@ -97,18 +99,11 @@ enum DispParamType {
     PP_PARAM_SHARP2     = 0x0020,
     PP_PARAM_TIMESTAMP  = 0x0040,
     UPDATE_BUFFER_GEOMETRY = 0x0080,
-    UPDATE_REFRESH_RATE = 0x0100,
-    UPDATE_COLOR_SPACE = 0x0200,
-    MAP_SECURE_BUFFER = 0x400,
-};
+    PP_PARAM_VFM_DATA   = 0x0100,
+    UPDATE_REFRESH_RATE = 0x0200,
+} DispParamType;
 
-struct private_handle_t;
-int setMetaData(struct private_handle_t *handle, enum DispParamType paramType,
-        void *param);
-
-#ifdef __cplusplus
-}
-#endif
+int setMetaData(private_handle_t *handle, DispParamType paramType, void *param);
 
 #endif /* _QDMETADATA_H */
 

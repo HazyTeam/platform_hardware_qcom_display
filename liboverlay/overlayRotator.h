@@ -35,6 +35,7 @@
 #include "mdpWrapper.h"
 #include "overlayUtils.h"
 #include "overlayMem.h"
+#include "sync/sync.h"
 
 namespace overlay {
 
@@ -52,8 +53,7 @@ struct RotMem {
     bool close();
     bool valid() { return mem.valid(); }
     uint32_t size() const { return mem.bufSz(); }
-    void setCurrBufReleaseFd(const int& fence);
-    void setPrevBufReleaseFd(const int& fence);
+    void setReleaseFd(const int& fence);
 
     // rotator data info dst offset
     uint32_t mRotOffset[ROT_NUM_BUFS];
@@ -70,56 +70,28 @@ public:
     virtual ~Rotator();
     virtual void setSource(const utils::Whf& wfh) = 0;
     virtual void setCrop(const utils::Dim& crop) = 0;
+    virtual bool isRotBufReusable(const utils::eMdpFlags& flags) = 0;
     virtual void setFlags(const utils::eMdpFlags& flags) = 0;
     virtual void setTransform(const utils::eTransform& rot) = 0;
     virtual bool commit() = 0;
-    /* return true if the current rotator state is cached */
-    virtual bool isRotCached(int fd, uint32_t offset) const;
-    /* return true if current rotator config is same as the last round*/
-    virtual bool rotConfChanged() const = 0;
-    /* return true if the current rotator input buffer fd and offset
-     * are same as the last round */
-    virtual bool rotDataChanged(int fd, uint32_t offset) const;
     virtual void setDownscale(int ds) = 0;
-    /* returns the src buffer of the rotator for the previous/current round,
-     * depending on when it is called(before/after the queuebuffer)*/
-    virtual int getSrcMemId() const = 0;
-    //Mem id and offset should be retrieved only after rotator kickoff
     virtual int getDstMemId() const = 0;
-    virtual uint32_t getSrcOffset() const = 0;
     virtual uint32_t getDstOffset() const = 0;
-    //Destination width, height, format, position should be retrieved only after
-    //rotator configuration is committed via commit API
     virtual uint32_t getDstFormat() const = 0;
-    virtual utils::Whf getDstWhf() const = 0;
-    virtual utils::Dim getDstDimensions() const = 0;
     virtual uint32_t getSessId() const = 0;
     virtual bool queueBuffer(int fd, uint32_t offset) = 0;
     virtual void dump() const = 0;
     virtual void getDump(char *buf, size_t len) const = 0;
-    inline void setCurrBufReleaseFd(const int& fence) {
-        mMem.setCurrBufReleaseFd(fence);
-    }
-    inline void setPrevBufReleaseFd(const int& fence) {
-        mMem.setPrevBufReleaseFd(fence);
-    }
+    void setReleaseFd(const int& fence) { mMem.setReleaseFd(fence); }
     static Rotator *getRotator();
-    /* Returns downscale by successfully applying constraints
-     * Returns 0 if target doesnt support rotator downscaling
-     * or if any of the constraints are not met
-     */
-    static int getDownscaleFactor(const int& srcW, const int& srcH,
-            const int& dstW, const int& dstH, const uint32_t& mdpFormat,
-            const bool& isInterlaced);
 
 protected:
     /* Rotator memory manager */
     RotMem mMem;
-    Rotator();
+    explicit Rotator() {}
     static uint32_t calcOutputBufSize(const utils::Whf& destWhf);
 
 private:
-    bool mRotCacheDisabled;
     /*Returns rotator h/w type */
     static int getRotatorHwType();
     friend class RotMgr;
@@ -134,18 +106,14 @@ public:
     virtual ~MdpRot();
     virtual void setSource(const utils::Whf& wfh);
     virtual void setCrop(const utils::Dim& crop);
+    virtual bool isRotBufReusable(const utils::eMdpFlags& flags);
     virtual void setFlags(const utils::eMdpFlags& flags);
     virtual void setTransform(const utils::eTransform& rot);
     virtual bool commit();
-    virtual bool rotConfChanged() const;
     virtual void setDownscale(int ds);
-    virtual int getSrcMemId() const;
     virtual int getDstMemId() const;
-    virtual uint32_t getSrcOffset() const;
     virtual uint32_t getDstOffset() const;
     virtual uint32_t getDstFormat() const;
-    virtual utils::Whf getDstWhf() const;
-    virtual utils::Dim getDstDimensions() const;
     virtual uint32_t getSessId() const;
     virtual bool queueBuffer(int fd, uint32_t offset);
     virtual void dump() const;
@@ -164,21 +132,14 @@ private:
     void doTransform();
     /* reset underlying data, basically memset 0 */
     void reset();
+    /* return true if current rotator config is different
+     * than last known config */
+    bool rotConfChanged() const;
     /* save mRotImgInfo to be last known good config*/
     void save();
     /* Calculates the rotator's o/p buffer size post the transform calcs and
      * knowing the o/p format depending on whether fastYuv is enabled or not */
     uint32_t calcOutputBufSize();
-
-    /* Applies downscale by taking areas
-     * Returns a log(downscale)
-     * Constraints applied:
-     * - downscale should be a power of 2
-     * - Max downscale is 1/8
-     */
-    static int getDownscaleFactor(const int& srcW, const int& srcH,
-            const int& dstW, const int& dstH, const uint32_t& mdpFormat,
-            const bool& isInterlaced);
 
     /* rot info*/
     msm_rotator_img_info mRotImgInfo;
@@ -192,9 +153,6 @@ private:
     OvFD mFd;
 
     friend Rotator* Rotator::getRotator();
-    friend int Rotator::getDownscaleFactor(const int& srcW, const int& srcH,
-            const int& dstW, const int& dstH, const uint32_t& mdpFormat,
-            const bool& isInterlaced);
 };
 
 /*
@@ -206,18 +164,14 @@ public:
     virtual ~MdssRot();
     virtual void setSource(const utils::Whf& wfh);
     virtual void setCrop(const utils::Dim& crop);
+    virtual bool isRotBufReusable(const utils::eMdpFlags& flags);
     virtual void setFlags(const utils::eMdpFlags& flags);
     virtual void setTransform(const utils::eTransform& rot);
     virtual bool commit();
-    virtual bool rotConfChanged() const;
     virtual void setDownscale(int ds);
-    virtual int getSrcMemId() const;
     virtual int getDstMemId() const;
-    virtual uint32_t getSrcOffset() const;
     virtual uint32_t getDstOffset() const;
     virtual uint32_t getDstFormat() const;
-    virtual utils::Whf getDstWhf() const;
-    virtual utils::Dim getDstDimensions() const;
     virtual uint32_t getSessId() const;
     virtual bool queueBuffer(int fd, uint32_t offset);
     virtual void dump() const;
@@ -236,37 +190,14 @@ private:
     void doTransform();
     /* reset underlying data, basically memset 0 */
     void reset();
-    /* save mRotInfo to be last known good config*/
-    void save();
     /* Calculates the rotator's o/p buffer size post the transform calcs and
      * knowing the o/p format depending on whether fastYuv is enabled or not */
     uint32_t calcOutputBufSize();
     // Calculate the compressed o/p buffer size for BWC
     uint32_t calcCompressedBufSize(const utils::Whf& destWhf);
 
-     /* Caller's responsibility to swap srcW, srcH if there is a 90 transform
-      * Returns actual downscale (not a log value)
-      * Constraints applied:
-      * - downscale should be a power of 2
-      * - Max downscale is 1/32
-      * - Equal downscale is applied in both directions
-      * - {srcW, srcH} mod downscale = 0
-      * - Interlaced content is not supported
-      */
-    static int getDownscaleFactor(const int& srcW, const int& srcH,
-            const int& dstW, const int& dstH, const uint32_t& mdpFormat,
-            const bool& isInterlaced);
-
-    static utils::Dim getFormatAdjustedCrop(const utils::Dim& crop,
-            const uint32_t& mdpFormat, const bool& isInterlaced);
-
-    static utils::Dim getDownscaleAdjustedCrop(const utils::Dim& crop,
-            const uint32_t& downscale);
-
     /* MdssRot info structure */
-    mdp_overlay mRotInfo;
-    /* Last saved MdssRot info structure*/
-    mdp_overlay mLSRotInfo;
+    mdp_overlay   mRotInfo;
     /* MdssRot data structure */
     msmfb_overlay_data mRotData;
     /* Orientation */
@@ -275,21 +206,16 @@ private:
     OvFD mFd;
     /* Enable/Disable Mdss Rot*/
     bool mEnabled;
-    int mDownscale;
 
     friend Rotator* Rotator::getRotator();
-    friend int Rotator::getDownscaleFactor(const int& srcW, const int& srcH,
-            const int& dstW, const int& dstH, const uint32_t& mdpFormat,
-            const bool& isInterlaced);
 };
 
 // Holder of rotator objects. Manages lifetimes
 class RotMgr {
 public:
-    //Virtually we can support as many rotator sessions as possible, However
-    // more number of rotator sessions leads to performance issues, so
-    // restricting the max rotator session to 4
-    enum { MAX_ROT_SESS = 4 };
+    //Maximum sessions based on VG pipes, since rotator is used only for videos.
+    //Even though we can have 4 mixer stages, that much may be unnecessary.
+    enum { MAX_ROT_SESS = 3 };
 
     ~RotMgr();
     void configBegin();

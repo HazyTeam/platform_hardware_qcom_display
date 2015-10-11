@@ -1,11 +1,13 @@
 #Common headers
-common_includes := $(LOCAL_PATH)/../libgralloc
-common_includes += $(LOCAL_PATH)/../liboverlay
-common_includes += $(LOCAL_PATH)/../libcopybit
-common_includes += $(LOCAL_PATH)/../libqdutils
-common_includes += $(LOCAL_PATH)/../libhwcomposer
-common_includes += $(LOCAL_PATH)/../libhdmi
-common_includes += $(LOCAL_PATH)/../libqservice
+common_includes := hardware/qcom/display/libgralloc
+common_includes += hardware/qcom/display/liboverlay
+common_includes += hardware/qcom/display/libcopybit
+common_includes += hardware/qcom/display/libqdutils
+common_includes += hardware/qcom/display/libhwcomposer
+common_includes += hardware/qcom/display/libexternal
+common_includes += hardware/qcom/display/libqservice
+common_includes += hardware/qcom/display/libvirtual
+common_includes += hardware/qcom/display/libhdmi
 
 ifeq ($(TARGET_USES_POST_PROCESSING),true)
     common_flags     += -DUSES_POST_PROCESSING
@@ -19,24 +21,23 @@ common_libs := liblog libutils libcutils libhardware
 
 #Common C flags
 common_flags := -DDEBUG_CALC_FPS -Wno-missing-field-initializers
-common_flags += -Wconversion -Wall -Werror
+common_flags += -Werror -Wno-error=unused-parameter 
 
 ifeq ($(ARCH_ARM_HAVE_NEON),true)
     common_flags += -D__ARM_HAVE_NEON
 endif
 
-ifeq ($(call is-board-platform-in-list, $(MSM_VIDC_TARGET_LIST)), true)
+ifeq ($(call is-board-platform-in-list, msm8974 msm8226 msm8610 apq8084 \
+        mpq8092 msm_bronze msm8916), true)
     common_flags += -DVENUS_COLOR_FORMAT
+    common_flags += -DMDSS_TARGET
 endif
 
-ifeq ($(call is-board-platform-in-list, msm8974 msm8226 msm8610 apq8084 \
-        mpq8092 msm_bronze msm8916 msm8994), true)
-    common_flags += -DMDSS_TARGET
+ifeq ($(call is-board-platform-in-list, mpq8092 msm_bronze msm8916), true)
+    #XXX: Replace with check from MDP when available
+    common_flags += -DVPU_TARGET
 endif
-ifeq ($(call is-board-platform-in-list, msm8909), true)
-    common_flags += -DVENUS_COLOR_FORMAT
-    common_flags += -DMDSS_TARGET
-endif
+
 
 common_deps  :=
 kernel_includes :=

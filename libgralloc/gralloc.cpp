@@ -24,6 +24,8 @@
 #include <sys/ioctl.h>
 #include <cutils/properties.h>
 
+#include <linux/android_pmem.h>
+
 #include "gr.h"
 #include "gpu.h"
 #include "memalloc.h"
@@ -91,6 +93,7 @@ struct private_module_t HAL_MODULE_INFO_SYM = {
     numBuffers: 0,
     bufferMask: 0,
     lock: PTHREAD_MUTEX_INITIALIZER,
+    currentBuffer: 0,
 };
 
 // Open Gralloc device

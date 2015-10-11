@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2015, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2012-2013, The Linux Foundation. All rights reserved.
  *
  * Not a Contribution, Apache license notifications and license are retained
  * for attribution purposes only.
@@ -25,6 +25,7 @@
 #include <cutils/properties.h>
 #include <overlay.h>
 
+#define DEFAULT_IDLE_TIME 2000
 #define MAX_PIPES_PER_MIXER 4
 
 namespace overlay {
@@ -45,7 +46,7 @@ public:
     //Reset values
     void reset();
     /* dumpsys */
-    void dump(android::String8& buf, hwc_context_t *ctx);
+    void dump(android::String8& buf);
     bool isGLESOnlyComp() { return (mCurrentFrame.mdpCount == 0); }
     bool isMDPComp() { return mModeOn; }
     int drawOverlap(hwc_context_t *ctx, hwc_display_contents_1_t* list);
@@ -56,13 +57,7 @@ public:
     static bool init(hwc_context_t *ctx);
     static void resetIdleFallBack() { sIdleFallBack = false; }
     static bool isIdleFallback() { return sIdleFallBack; }
-    static void dynamicDebug(bool enable){ sDebugLogs = enable; }
-    static void setIdleTimeout(const uint32_t& timeout);
-    static int setPartialUpdatePref(hwc_context_t *ctx, bool enable);
     void setDynRefreshRate(hwc_context_t *ctx, hwc_display_contents_1_t* list);
-    static int getPartialUpdatePref(hwc_context_t *ctx);
-    static void enablePartialUpdate(bool enable)
-                                          { sIsPartialUpdateActive = enable; };
 
 protected:
     enum { MAX_SEC_LAYERS = 1 }; //TODO add property support
@@ -72,15 +67,6 @@ protected:
         MDPCOMP_OV_VG = ovutils::OV_MDP_PIPE_VG,
         MDPCOMP_OV_DMA = ovutils::OV_MDP_PIPE_DMA,
         MDPCOMP_OV_ANY,
-    };
-
-    //Simulation flags
-    enum {
-        MDPCOMP_AVOID_FULL_MDP = 0x001,
-        MDPCOMP_AVOID_CACHE_MDP = 0x002,
-        MDPCOMP_AVOID_LOAD_MDP = 0x004,
-        MDPCOMP_AVOID_VIDEO_ONLY = 0x008,
-        MDPCOMP_AVOID_MDP_ONLY_LAYERS = 0x010,
     };
 
     /* mdp pipe data */
@@ -150,6 +136,8 @@ protected:
     /* allocates pipe from pipe book */
     virtual bool allocLayerPipes(hwc_context_t *ctx,
                                  hwc_display_contents_1_t* list) = 0;
+    /* allocate MDP pipes from overlay */
+    ovutils::eDest getMdpPipe(hwc_context_t *ctx, ePipeType type, int mixer);
     /* configures MPD pipes */
     virtual int configure(hwc_context_t *ctx, hwc_layer_1_t *layer,
                           PipeLayerPair& pipeLayerPair) = 0;
@@ -160,15 +148,6 @@ protected:
     /* configures 4kx2k yuv layer*/
     virtual int configure4k2kYuv(hwc_context_t *ctx, hwc_layer_1_t *layer,
             PipeLayerPair& PipeLayerPair) = 0;
-    /* generates ROI based on the modified area of the frame */
-    virtual void generateROI(hwc_context_t *ctx,
-            hwc_display_contents_1_t* list) = 0;
-    /* validates the ROI generated for fallback conditions */
-    virtual bool validateAndApplyROI(hwc_context_t *ctx,
-            hwc_display_contents_1_t* list) = 0;
-    /* Trims fbRect calculated against ROI generated */
-    virtual void trimAgainstROI(hwc_context_t *ctx, hwc_rect_t& fbRect) = 0;
-
     /* set/reset flags for MDPComp */
     void setMDPCompLayerFlags(hwc_context_t *ctx,
                               hwc_display_contents_1_t* list);
@@ -192,22 +171,22 @@ protected:
      * lower number of pixels and can reduce GPU processing time */
     bool loadBasedComp(hwc_context_t *ctx, hwc_display_contents_1_t* list);
     /* Checks if its worth doing load based partial comp */
-    bool isLoadBasedCompDoable(hwc_context_t *ctx);
+    bool isLoadBasedCompDoable(hwc_context_t *ctx,
+            hwc_display_contents_1_t* list);
     /* checks for conditions where only video can be bypassed */
     bool tryVideoOnly(hwc_context_t *ctx, hwc_display_contents_1_t* list);
     bool videoOnlyComp(hwc_context_t *ctx, hwc_display_contents_1_t* list,
             bool secureOnly);
-    /* checks for conditions where only secure RGB and video can be bypassed */
-    bool tryMDPOnlyLayers(hwc_context_t *ctx, hwc_display_contents_1_t* list);
-    bool mdpOnlyLayersComp(hwc_context_t *ctx, hwc_display_contents_1_t* list,
-            bool secureOnly);
     /* checks for conditions where YUV layers cannot be bypassed */
     bool isYUVDoable(hwc_context_t* ctx, hwc_layer_1_t* layer);
-    /* checks for conditions where Secure RGB layers cannot be bypassed */
-    bool isSecureRGBDoable(hwc_context_t* ctx, hwc_layer_1_t* layer);
     /* checks if MDP/MDSS can process current list w.r.to HW limitations
      * All peculiar HW limitations should go here */
     bool hwLimitationsCheck(hwc_context_t* ctx, hwc_display_contents_1_t* list);
+    /* generates ROI based on the modified area of the frame */
+    void generateROI(hwc_context_t *ctx, hwc_display_contents_1_t* list);
+    bool validateAndApplyROI(hwc_context_t *ctx, hwc_display_contents_1_t* list,
+                             hwc_rect_t roi);
+
     /* Is debug enabled */
     static bool isDebug() { return sDebugLogs ? true : false; };
     /* Is feature enabled */
@@ -228,15 +207,9 @@ protected:
     bool intersectingUpdatingLayers(const hwc_display_contents_1_t* list,
             int fromIndex, int toIndex, int targetLayerIndex);
 
-    /* drop other non-AIV layers from external display list.*/
-    void dropNonAIVLayers(hwc_context_t* ctx, hwc_display_contents_1_t* list);
-
         /* updates cache map with YUV info */
     void updateYUV(hwc_context_t* ctx, hwc_display_contents_1_t* list,
             bool secureOnly, FrameInfo& frame);
-    /* updates cache map with secure RGB info */
-    void updateSecureRGB(hwc_context_t* ctx,
-            hwc_display_contents_1_t* list);
     /* Validates if the GPU/MDP layer split chosen by a strategy is supported
      * by MDP.
      * Sets up MDP comp data structures to reflect covnversion from layers to
@@ -248,31 +221,26 @@ protected:
             hwc_display_contents_1_t* list);
     void reset(hwc_context_t *ctx);
     bool isSupportedForMDPComp(hwc_context_t *ctx, hwc_layer_1_t* layer);
-    bool resourceCheck(hwc_context_t* ctx, hwc_display_contents_1_t* list);
-    hwc_rect_t getUpdatingFBRect(hwc_context_t *ctx,
-            hwc_display_contents_1_t* list);
-    /* checks for conditions to enable partial udpate */
-    bool canPartialUpdate(hwc_context_t *ctx, hwc_display_contents_1_t* list);
+    bool resourceCheck(hwc_context_t *ctx, hwc_display_contents_1_t *list);
+    bool canDoPartialUpdate(hwc_context_t *ctx, hwc_display_contents_1_t* list);
 
     int mDpy;
     static bool sEnabled;
     static bool sEnableMixedMode;
-    static int sSimulationFlags;
+    /* Enables Partial frame composition */
+    static bool sEnablePartialFrameUpdate;
     static bool sDebugLogs;
     static bool sIdleFallBack;
     static int sMaxPipesPerMixer;
-    static bool sSrcSplitEnabled;
-    static IdleInvalidator *sIdleInvalidator;
+    static IdleInvalidator *idleInvalidator;
     struct FrameInfo mCurrentFrame;
     struct LayerCache mCachedFrame;
-    static bool sIsPartialUpdateActive;
     //Enable 4kx2k yuv layer split
-    static bool sEnableYUVsplit;
+    static bool sEnable4k2kYUVSplit;
+    bool allocSplitVGPipesfor4k2k(hwc_context_t *ctx,
+            hwc_display_contents_1_t* list, int index);
     bool mModeOn; // if prepare happened
-    bool allocSplitVGPipesfor4k2k(hwc_context_t *ctx, int index);
     bool mPrevModeOn; //if previous prepare happened
-    //Enable Partial Update for MDP3 targets
-    static bool enablePartialUpdateForMDP3;
 };
 
 class MDPCompNonSplit : public MDPComp {
@@ -298,19 +266,11 @@ private:
     /* Increments mdpCount if 4k2k yuv layer split is enabled.
      * updates framebuffer z order if fb lies above source-split layer */
     virtual void adjustForSourceSplit(hwc_context_t *ctx,
-            hwc_display_contents_1_t* list);
+             hwc_display_contents_1_t* list);
 
     /* configures 4kx2k yuv layer to 2 VG pipes*/
     virtual int configure4k2kYuv(hwc_context_t *ctx, hwc_layer_1_t *layer,
             PipeLayerPair& PipeLayerPair);
-    /* generates ROI based on the modified area of the frame */
-    virtual void generateROI(hwc_context_t *ctx,
-            hwc_display_contents_1_t* list);
-    /* validates the ROI generated for fallback conditions */
-    virtual bool validateAndApplyROI(hwc_context_t *ctx,
-            hwc_display_contents_1_t* list);
-    /* Trims fbRect calculated against ROI generated */
-    virtual void trimAgainstROI(hwc_context_t *ctx, hwc_rect_t& fbRect);
 };
 
 class MDPCompSplit : public MDPComp {
@@ -318,16 +278,15 @@ public:
     explicit MDPCompSplit(int dpy):MDPComp(dpy){};
     virtual ~MDPCompSplit(){};
     virtual bool draw(hwc_context_t *ctx, hwc_display_contents_1_t *list);
-
-protected:
+private:
     struct MdpPipeInfoSplit : public MdpPipeInfo {
         ovutils::eDest lIndex;
         ovutils::eDest rIndex;
         virtual ~MdpPipeInfoSplit() {};
     };
 
-    virtual bool acquireMDPPipes(hwc_context_t *ctx, hwc_layer_1_t* layer,
-                         MdpPipeInfoSplit& pipe_info);
+    bool acquireMDPPipes(hwc_context_t *ctx, hwc_layer_1_t* layer,
+                         MdpPipeInfoSplit& pipe_info, ePipeType type);
 
     /* configure's overlay pipes for the frame */
     virtual int configure(hwc_context_t *ctx, hwc_layer_1_t *layer,
@@ -336,7 +295,7 @@ protected:
     /* allocates pipes to selected candidates */
     virtual bool allocLayerPipes(hwc_context_t *ctx,
                                  hwc_display_contents_1_t* list);
-private:
+
     /* Increments mdpCount if 4k2k yuv layer split is enabled.
      * updates framebuffer z order if fb lies above source-split layer */
     virtual void adjustForSourceSplit(hwc_context_t *ctx,
@@ -345,26 +304,6 @@ private:
     /* configures 4kx2k yuv layer*/
     virtual int configure4k2kYuv(hwc_context_t *ctx, hwc_layer_1_t *layer,
             PipeLayerPair& PipeLayerPair);
-    /* generates ROI based on the modified area of the frame */
-    virtual void generateROI(hwc_context_t *ctx,
-            hwc_display_contents_1_t* list);
-    /* validates the ROI generated for fallback conditions */
-    virtual bool validateAndApplyROI(hwc_context_t *ctx,
-            hwc_display_contents_1_t* list);
-    /* Trims fbRect calculated against ROI generated */
-    virtual void trimAgainstROI(hwc_context_t *ctx, hwc_rect_t& fbRect);
-};
-
-class MDPCompSrcSplit : public MDPCompSplit {
-public:
-    explicit MDPCompSrcSplit(int dpy) : MDPCompSplit(dpy){};
-    virtual ~MDPCompSrcSplit(){};
-private:
-    virtual bool acquireMDPPipes(hwc_context_t *ctx, hwc_layer_1_t* layer,
-            MdpPipeInfoSplit& pipe_info);
-
-    virtual int configure(hwc_context_t *ctx, hwc_layer_1_t *layer,
-            PipeLayerPair& pipeLayerPair);
 };
 
 }; //namespace

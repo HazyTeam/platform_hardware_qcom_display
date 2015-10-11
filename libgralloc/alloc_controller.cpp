@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2014, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2012, The Linux Foundation. All rights reserved.
 
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -36,7 +36,6 @@
 #include "ionalloc.h"
 #include "gr.h"
 #include "comptype.h"
-#include "mdp_version.h"
 
 #ifdef VENUS_COLOR_FORMAT
 #include <media/msm_media_info.h>
@@ -45,8 +44,6 @@
 #define VENUS_Y_SCANLINES(args...) 0
 #define VENUS_BUFFER_SIZE(args...) 0
 #endif
-
-#define ASTC_BLOCK_SIZE 16
 
 using namespace gralloc;
 using namespace qdutils;
@@ -96,20 +93,13 @@ AdrenoMemInfo::AdrenoMemInfo()
 {
     LINK_adreno_compute_aligned_width_and_height = NULL;
     LINK_adreno_compute_padding = NULL;
-    LINK_adreno_isMacroTilingSupportedByGpu = NULL;
-    LINK_adreno_compute_compressedfmt_aligned_width_and_height = NULL;
 
     libadreno_utils = ::dlopen("libadreno_utils.so", RTLD_NOW);
     if (libadreno_utils) {
         *(void **)&LINK_adreno_compute_aligned_width_and_height =
-                ::dlsym(libadreno_utils, "compute_aligned_width_and_height");
-        *(void **)&LINK_adreno_compute_padding =
-                ::dlsym(libadreno_utils, "compute_surface_padding");
-        *(void **)&LINK_adreno_isMacroTilingSupportedByGpu =
-                ::dlsym(libadreno_utils, "isMacroTilingSupportedByGpu");
-        *(void **)&LINK_adreno_compute_compressedfmt_aligned_width_and_height =
-                ::dlsym(libadreno_utils,
-                        "compute_compressedfmt_aligned_width_and_height");
+            ::dlsym(libadreno_utils, "compute_aligned_width_and_height");
+        *(void **)&LINK_adreno_compute_padding = ::dlsym(libadreno_utils,
+                                           "compute_surface_padding");
     }
 }
 
@@ -120,19 +110,8 @@ AdrenoMemInfo::~AdrenoMemInfo()
     }
 }
 
-int AdrenoMemInfo::isMacroTilingSupportedByGPU()
-{
-    if ((libadreno_utils)) {
-        if(LINK_adreno_isMacroTilingSupportedByGpu) {
-            return LINK_adreno_isMacroTilingSupportedByGpu();
-        }
-    }
-    return 0;
-}
-
-
 void AdrenoMemInfo::getAlignedWidthAndHeight(int width, int height, int format,
-                            int tile_enabled, int& aligned_w, int& aligned_h)
+                              int& aligned_w, int& aligned_h)
 {
     aligned_w = width;
     aligned_h = height;
@@ -166,8 +145,9 @@ void AdrenoMemInfo::getAlignedWidthAndHeight(int width, int height, int format,
             // the function below computes aligned width and aligned height
             // based on linear or macro tile mode selected.
             if(LINK_adreno_compute_aligned_width_and_height) {
-                LINK_adreno_compute_aligned_width_and_height(width,
-                                     height, bpp, tile_enabled,
+               int tile_mode = 0;   // Linear surface
+               LINK_adreno_compute_aligned_width_and_height(width,
+                                     height, bpp, tile_mode,
                                      raster_mode, padding_threshold,
                                      &aligned_w, &aligned_h);
 
@@ -186,7 +166,6 @@ void AdrenoMemInfo::getAlignedWidthAndHeight(int width, int height, int format,
     } else {
         switch (format)
         {
-            case HAL_PIXEL_FORMAT_YCrCb_420_SP:
             case HAL_PIXEL_FORMAT_YCrCb_420_SP_ADRENO:
                 aligned_w = ALIGN(width, 32);
                 break;
@@ -194,6 +173,7 @@ void AdrenoMemInfo::getAlignedWidthAndHeight(int width, int height, int format,
                 aligned_w = ALIGN(width, 128);
                 break;
             case HAL_PIXEL_FORMAT_YCbCr_420_SP:
+            case HAL_PIXEL_FORMAT_YCrCb_420_SP:
             case HAL_PIXEL_FORMAT_YV12:
             case HAL_PIXEL_FORMAT_YCbCr_422_SP:
             case HAL_PIXEL_FORMAT_YCrCb_422_SP:
@@ -211,50 +191,6 @@ void AdrenoMemInfo::getAlignedWidthAndHeight(int width, int height, int format,
             case HAL_PIXEL_FORMAT_NV21_ZSL:
                 aligned_w = ALIGN(width, 64);
                 aligned_h = ALIGN(height, 64);
-                break;
-            case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_4x4_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_5x4_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_5x4_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_5x5_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_6x5_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_6x5_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_6x6_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_8x5_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_8x5_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_8x6_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_8x6_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_8x8_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_8x8_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_10x5_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_10x5_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_10x6_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_10x6_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_10x8_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_10x8_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_10x10_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_10x10_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_12x10_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_12x10_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_12x12_KHR:
-            case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_12x12_KHR:
-                if(LINK_adreno_compute_compressedfmt_aligned_width_and_height) {
-                    int bytesPerPixel = 0;
-                    int raster_mode         = 0;   //Adreno unknown raster mode.
-                    int padding_threshold   = 512; //Threshold for padding
-                    //surfaces.
-
-                    LINK_adreno_compute_compressedfmt_aligned_width_and_height(
-                        width, height, format, 0,raster_mode, padding_threshold,
-                        &aligned_w, &aligned_h, &bytesPerPixel);
-
-                } else {
-                    ALOGW("%s: Warning!! Symbols" \
-                          " compute_compressedfmt_aligned_width_and_height" \
-                          " not found", __FUNCTION__);
-                }
                 break;
             default: break;
         }
@@ -308,6 +244,7 @@ int IonController::allocate(alloc_data& data, int usage)
             // for targets/OEMs which do not need HW level protection
             // do not set ion secure flag & MM heap. Fallback to IOMMU heap.
             ionFlags |= ION_HEAP(ION_IOMMU_HEAP_ID);
+            data.allocType |= private_handle_t::PRIV_FLAGS_PROTECTED_BUFFER;
         }
     } else if(usage & GRALLOC_USAGE_PRIVATE_MM_HEAP) {
         //MM Heap is exclusively a secure heap.
@@ -365,43 +302,16 @@ IMemAlloc* IonController::getAllocator(int flags)
     return memalloc;
 }
 
-bool isMacroTileEnabled(int format, int usage)
+size_t getBufferSizeAndDimensions(int width, int height, int format,
+                                  int& alignedw, int &alignedh)
 {
-    bool tileEnabled = false;
+    size_t size = 0;
 
-    // Check whether GPU & MDSS supports MacroTiling feature
-    if(AdrenoMemInfo::getInstance().isMacroTilingSupportedByGPU() &&
-            qdutils::MDPVersion::getInstance().supportsMacroTile())
-    {
-        // check the format
-        switch(format)
-        {
-            case  HAL_PIXEL_FORMAT_RGBA_8888:
-            case  HAL_PIXEL_FORMAT_RGBX_8888:
-            case  HAL_PIXEL_FORMAT_BGRA_8888:
-            case  HAL_PIXEL_FORMAT_RGB_565:
-                {
-                    tileEnabled = true;
-                    // check the usage flags
-                    if (usage & (GRALLOC_USAGE_SW_READ_MASK |
-                                GRALLOC_USAGE_SW_WRITE_MASK)) {
-                        // Application intends to use CPU for rendering
-                        tileEnabled = false;
-                    }
-                    break;
-                }
-            default:
-                break;
-        }
-    }
-    return tileEnabled;
-}
-
-// helper function
-unsigned int getSize(int format, int width, int height, const int alignedw,
-        const int alignedh) {
-    unsigned int size = 0;
-
+    AdrenoMemInfo::getInstance().getAlignedWidthAndHeight(width,
+                                                          height,
+                                                          format,
+                                                          alignedw,
+                                                          alignedh);
     switch (format) {
         case HAL_PIXEL_FORMAT_RGBA_8888:
         case HAL_PIXEL_FORMAT_RGBX_8888:
@@ -435,7 +345,7 @@ unsigned int getSize(int format, int width, int height, const int alignedw,
             }
             size = alignedw*alignedh +
                     (ALIGN(alignedw/2, 16) * (alignedh/2))*2;
-            size = ALIGN(size, (unsigned int)4096);
+            size = ALIGN(size, 4096);
             break;
         case HAL_PIXEL_FORMAT_YCbCr_420_SP:
         case HAL_PIXEL_FORMAT_YCrCb_420_SP:
@@ -466,98 +376,18 @@ unsigned int getSize(int format, int width, int height, const int alignedw,
         case HAL_PIXEL_FORMAT_NV21_ZSL:
             size = ALIGN((alignedw*alignedh) + (alignedw* alignedh)/2, 4096);
             break;
-        case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_4x4_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_5x4_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_5x5_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_6x5_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_6x6_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_8x5_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_8x6_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_8x8_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_10x5_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_10x6_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_10x8_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_10x10_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_12x10_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_RGBA_ASTC_12x12_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_5x4_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_6x5_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_8x5_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_8x6_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_8x8_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_10x5_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_10x6_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_10x8_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_10x10_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_12x10_KHR:
-        case HAL_PIXEL_FORMAT_COMPRESSED_SRGB8_ALPHA8_ASTC_12x12_KHR:
-            size = alignedw * alignedh * ASTC_BLOCK_SIZE;
-            break;
         default:
             ALOGE("unrecognized pixel format: 0x%x", format);
             return 0;
     }
-    return size;
-}
-
-unsigned int getBufferSizeAndDimensions(int width, int height, int format,
-        int& alignedw, int &alignedh)
-{
-    unsigned int size;
-
-    AdrenoMemInfo::getInstance().getAlignedWidthAndHeight(width,
-            height,
-            format,
-            false,
-            alignedw,
-            alignedh);
-
-    size = getSize(format, width, height, alignedw, alignedh);
 
     return size;
-}
-
-
-unsigned int getBufferSizeAndDimensions(int width, int height, int format,
-        int usage, int& alignedw, int &alignedh)
-{
-    unsigned int size;
-    int tileEnabled = isMacroTileEnabled(format, usage);
-
-    AdrenoMemInfo::getInstance().getAlignedWidthAndHeight(width,
-            height,
-            format,
-            tileEnabled,
-            alignedw,
-            alignedh);
-
-    size = getSize(format, width, height, alignedw, alignedh);
-
-    return size;
-}
-
-
-void getBufferAttributes(int width, int height, int format, int usage,
-        int& alignedw, int &alignedh, int& tileEnabled, unsigned int& size)
-{
-    tileEnabled = isMacroTileEnabled(format, usage);
-
-    AdrenoMemInfo::getInstance().getAlignedWidthAndHeight(width,
-            height,
-            format,
-            tileEnabled,
-            alignedw,
-            alignedh);
-    size = getSize(format, width, height, alignedw, alignedh);
 }
 
 int getYUVPlaneInfo(private_handle_t* hnd, struct android_ycbcr* ycbcr)
 {
     int err = 0;
-    unsigned int ystride, cstride;
+    size_t ystride, cstride;
     memset(ycbcr->reserved, 0, sizeof(ycbcr->reserved));
 
     // Get the chroma offsets from the handle width/height. We take advantage
@@ -571,7 +401,7 @@ int getYUVPlaneInfo(private_handle_t* hnd, struct android_ycbcr* ycbcr)
             ystride = cstride = hnd->width;
             ycbcr->y  = (void*)hnd->base;
             ycbcr->cb = (void*)(hnd->base + ystride * hnd->height);
-            ycbcr->cr = (void*)(hnd->base + ystride * hnd->height + 1);
+           ycbcr->cr = (void*)(hnd->base + ystride * hnd->height + 1);
             ycbcr->ystride = ystride;
             ycbcr->cstride = cstride;
             ycbcr->chroma_step = 2;
@@ -602,7 +432,7 @@ int getYUVPlaneInfo(private_handle_t* hnd, struct android_ycbcr* ycbcr)
             ycbcr->cstride = cstride;
             ycbcr->chroma_step = 1;
 
-        break;
+       break;
         //Unsupported formats
         case HAL_PIXEL_FORMAT_YCbCr_422_I:
         case HAL_PIXEL_FORMAT_YCrCb_422_I:
@@ -617,7 +447,6 @@ int getYUVPlaneInfo(private_handle_t* hnd, struct android_ycbcr* ycbcr)
 }
 
 
-
 // Allocate buffer from width, height and format into a
 // private_handle_t. It is the responsibility of the caller
 // to free the buffer using the free_buffer function
@@ -630,9 +459,7 @@ int alloc_buffer(private_handle_t **pHnd, int w, int h, int format, int usage)
     data.base = 0;
     data.fd = -1;
     data.offset = 0;
-    data.size = getBufferSizeAndDimensions(w, h, format, usage, alignedw,
-                                            alignedh);
-
+    data.size = getBufferSizeAndDimensions(w, h, format, alignedw, alignedh);
     data.align = getpagesize();
     data.uncached = useUncached(usage);
     int allocFlags = usage;
@@ -646,7 +473,7 @@ int alloc_buffer(private_handle_t **pHnd, int w, int h, int format, int usage)
     private_handle_t* hnd = new private_handle_t(data.fd, data.size,
                                                  data.allocType, 0, format,
                                                  alignedw, alignedh);
-    hnd->base = (uint64_t) data.base;
+    hnd->base = (int) data.base;
     hnd->offset = data.offset;
     hnd->gpuaddr = 0;
     *pHnd = hnd;

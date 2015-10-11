@@ -31,6 +31,7 @@
 #include "hwc_copybit.h"
 #include "comptype.h"
 #include "hdmi.h"
+#include "virtual.h"
 #include "hwc_virtual.h"
 #include "mdp_version.h"
 using namespace overlay;
@@ -39,18 +40,13 @@ namespace qhwc {
 #define HWC_UEVENT_THREAD_NAME "hwcUeventThread"
 
 /* Parse uevent data for devices which we are interested */
-static int getConnectedDisplay(hwc_context_t* ctx, const char* strUdata)
+static int getConnectedDisplay(const char* strUdata)
 {
-    int ret = -1;
-    // Switch node for HDMI as PRIMARY/EXTERNAL
-    if(strcasestr("change@/devices/virtual/switch/hdmi", strUdata)) {
-        if (ctx->mHDMIDisplay->isHDMIPrimaryDisplay()) {
-            ret = HWC_DISPLAY_PRIMARY;
-        } else {
-            ret = HWC_DISPLAY_EXTERNAL;
-        }
-    }
-    return ret;
+    if(strcasestr("change@/devices/virtual/switch/hdmi", strUdata))
+        return HWC_DISPLAY_EXTERNAL;
+    if(strcasestr("change@/devices/virtual/switch/wfd", strUdata))
+        return HWC_DISPLAY_VIRTUAL;
+    return -1;
 }
 
 static bool getPanelResetStatus(hwc_context_t* ctx, const char* strUdata, int len)
@@ -85,6 +81,20 @@ static int getConnectedState(const char* strUdata, int len)
     return -1;
 }
 
+void handle_pause(hwc_context_t* ctx, int dpy) {
+    if(ctx->mHWCVirtual) {
+        ctx->mHWCVirtual->pause(ctx, dpy);
+    }
+    return;
+}
+
+void handle_resume(hwc_context_t* ctx, int dpy) {
+    if(ctx->mHWCVirtual) {
+        ctx->mHWCVirtual->resume(ctx, dpy);
+    }
+    return;
+}
+
 static void handle_uevent(hwc_context_t* ctx, const char* udata, int len)
 {
     bool bpanelReset = getPanelResetStatus(ctx, udata, len);
@@ -93,7 +103,7 @@ static void handle_uevent(hwc_context_t* ctx, const char* udata, int len)
         return;
     }
 
-    int dpy = getConnectedDisplay(ctx, udata);
+    int dpy = getConnectedDisplay(udata);
     if(dpy < 0) {
         ALOGD_IF(UEVENT_DEBUG, "%s: Not disp Event ", __FUNCTION__);
         return;
@@ -115,15 +125,24 @@ static void handle_uevent(hwc_context_t* ctx, const char* udata, int len)
             }
 
             ctx->mDrawLock.lock();
-            handle_offline(ctx, dpy);
+            destroyCompositionResources(ctx, dpy);
+            if(dpy == HWC_DISPLAY_EXTERNAL) {
+                ctx->mHDMIDisplay->teardown();
+            } else {
+                ctx->mVirtualDisplay->teardown();
+            }
+            resetDisplayInfo(ctx, dpy);
             ctx->mDrawLock.unlock();
 
             /* We need to send hotplug to SF only when we are disconnecting
-             * HDMI as an external display. */
-            if(dpy == HWC_DISPLAY_EXTERNAL) {
+             * (1) HDMI OR (2) proprietary WFD session */
+            if(dpy == HWC_DISPLAY_EXTERNAL ||
+               ctx->mVirtualonExtActive) {
                 ALOGE_IF(UEVENT_DEBUG,"%s:Sending EXTERNAL OFFLINE hotplug"
-                        "event", __FUNCTION__);
-                ctx->proc->hotplug(ctx->proc, dpy, EXTERNAL_OFFLINE);
+                         "event", __FUNCTION__);
+                ctx->proc->hotplug(ctx->proc, HWC_DISPLAY_EXTERNAL,
+                                   EXTERNAL_OFFLINE);
+                ctx->mVirtualonExtActive = false;
             }
             break;
         }
@@ -135,69 +154,118 @@ static void handle_uevent(hwc_context_t* ctx, const char* udata, int len)
                          "for display: %d", __FUNCTION__, dpy);
                 break;
             }
+            ctx->mDrawLock.lock();
+            //Force composition to give up resources like pipes and
+            //close fb. For example if assertive display is going on,
+            //fb2 could be open, thus connecting Layer Mixer#0 to
+            //WriteBack module. If HDMI attempts to open fb1, the driver
+            //will try to attach Layer Mixer#0 to HDMI INT, which will
+            //fail, since Layer Mixer#0 is still connected to WriteBack.
+            //This block will force composition to close fb2 in above
+            //example.
+            ctx->dpyAttr[dpy].isConfiguring = true;
+            ctx->mDrawLock.unlock();
 
-            if (ctx->mHDMIDisplay->isHDMIPrimaryDisplay()) {
-                ctx->mDrawLock.lock();
-                handle_online(ctx, dpy);
-                ctx->mDrawLock.unlock();
-
-                ctx->proc->invalidate(ctx->proc);
-                break;
-            } else {
-                ctx->mDrawLock.lock();
-                //Force composition to give up resources like pipes and
-                //close fb. For example if assertive display is going on,
-                //fb2 could be open, thus connecting Layer Mixer#0 to
-                //WriteBack module. If HDMI attempts to open fb1, the driver
-                //will try to attach Layer Mixer#0 to HDMI INT, which will
-                //fail, since Layer Mixer#0 is still connected to WriteBack.
-                //This block will force composition to close fb2 in above
-                //example.
-                ctx->dpyAttr[dpy].isConfiguring = true;
-                ctx->mDrawLock.unlock();
-
-                ctx->proc->invalidate(ctx->proc);
-            }
+            ctx->proc->invalidate(ctx->proc);
             //2 cycles for slower content
             usleep(ctx->dpyAttr[HWC_DISPLAY_PRIMARY].vsync_period
                    * 2 / 1000);
 
-            if(isVDConnected(ctx)) {
-                // Do not initiate WFD teardown if WFD architecture is based
-                // on VDS mechanism.
-                // WFD Stack listens to HDMI intent and initiates virtual
-                // display teardown.
-                // ToDo: Currently non-WFD Virtual display clients do not
-                // involve HWC. If there is a change, we need to come up
-                // with mechanism of how to address non-WFD Virtual display
-                // clients + HDMI
-                ctx->mWfdSyncLock.lock();
-                ALOGD_IF(HWC_WFDDISPSYNC_LOG,
-                        "%s: Waiting for wfd-teardown to be signalled",
-                        __FUNCTION__);
-                ctx->mWfdSyncLock.wait();
-                ALOGD_IF(HWC_WFDDISPSYNC_LOG,
-                        "%s: Teardown signalled. Completed waiting in"
-                        "uevent thread", __FUNCTION__);
-                ctx->mWfdSyncLock.unlock();
+            if(dpy == HWC_DISPLAY_EXTERNAL) {
+                if(ctx->dpyAttr[HWC_DISPLAY_VIRTUAL].connected) {
+                    ALOGD_IF(UEVENT_DEBUG,"Received HDMI connection request"
+                             "when WFD is active");
+                    {
+                        Locker::Autolock _l(ctx->mDrawLock);
+                        destroyCompositionResources(ctx, HWC_DISPLAY_VIRTUAL);
+                        ctx->dpyAttr[HWC_DISPLAY_VIRTUAL].connected = false;
+                        ctx->dpyAttr[HWC_DISPLAY_VIRTUAL].isActive = false;
+                    }
+
+                    ctx->mVirtualDisplay->teardown();
+
+                    /* Need to send hotplug only when connected WFD in
+                     * proprietary path */
+                    if(ctx->mVirtualonExtActive) {
+                        ALOGE_IF(UEVENT_DEBUG,"%s: Sending EXTERNAL OFFLINE"
+                                 "hotplug event", __FUNCTION__);
+                        ctx->proc->hotplug(ctx->proc, HWC_DISPLAY_EXTERNAL,
+                                           EXTERNAL_OFFLINE);
+                        {
+                            Locker::Autolock _l(ctx->mDrawLock);
+                            ctx->mVirtualonExtActive = false;
+                        }
+                    }
+
+                    ctx->mWfdSyncLock.lock();
+                    ALOGD_IF(HWC_WFDDISPSYNC_LOG,
+                             "%s: Waiting for wfd-teardown to be signalled",
+                             __FUNCTION__);
+                    ctx->mWfdSyncLock.wait();
+                    ALOGD_IF(HWC_WFDDISPSYNC_LOG,
+                             "%s: Teardown signalled",__FUNCTION__);
+                    ctx->mWfdSyncLock.unlock();
+                }
+                ctx->mHDMIDisplay->configure();
+                ctx->mHDMIDisplay->activateDisplay();
+                ctx->mDrawLock.lock();
+                updateDisplayInfo(ctx, dpy);
+                ctx->mDrawLock.unlock();
+            } else {
+                {
+                    Locker::Autolock _l(ctx->mDrawLock);
+                    /* TRUE only when we are on proprietary WFD session */
+                    ctx->mVirtualonExtActive = true;
+                    char property[PROPERTY_VALUE_MAX];
+                    if((property_get("persist.sys.wfd.virtual",
+                                                  property, NULL) > 0) &&
+                       (!strncmp(property, "1", PROPERTY_VALUE_MAX ) ||
+                       (!strncasecmp(property,"true", PROPERTY_VALUE_MAX )))) {
+                        // This means we are on Google's WFD session
+                        ctx->mVirtualonExtActive = false;
+                    }
+                }
+                ctx->mVirtualDisplay->configure();
             }
-            ctx->mHDMIDisplay->configure();
-            ctx->mHDMIDisplay->activateDisplay();
 
             ctx->mDrawLock.lock();
-            updateDisplayInfo(ctx, dpy);
             initCompositionResources(ctx, dpy);
             ctx->dpyAttr[dpy].isPause = false;
             ctx->dpyAttr[dpy].connected = true;
             ctx->dpyAttr[dpy].isConfiguring = true;
             ctx->mDrawLock.unlock();
 
-            /* External display is HDMI */
-            ALOGE_IF(UEVENT_DEBUG, "%s: Sending EXTERNAL ONLINE"
-                    "hotplug event", __FUNCTION__);
-            ctx->proc->hotplug(ctx->proc, dpy, EXTERNAL_ONLINE);
+            if(dpy == HWC_DISPLAY_EXTERNAL ||
+               ctx->mVirtualonExtActive) {
+                /* External display is HDMI or non-hybrid WFD solution */
+                ALOGE_IF(UEVENT_DEBUG, "%s: Sending EXTERNAL_OFFLINE ONLINE"
+                         "hotplug event", __FUNCTION__);
+                ctx->proc->hotplug(ctx->proc,HWC_DISPLAY_EXTERNAL,
+                                   EXTERNAL_ONLINE);
+            } else {
+                /* We wont be getting unblank for VIRTUAL DISPLAY and its
+                 * always guaranteed from WFD stack that CONNECT uevent for
+                 * VIRTUAL DISPLAY will be triggered before creating
+                 * surface for the same. */
+                ctx->dpyAttr[HWC_DISPLAY_VIRTUAL].isActive = true;
+            }
             break;
         }
+        case EXTERNAL_PAUSE:
+            {   // pause case
+                ALOGD("%s Received Pause event",__FUNCTION__);
+                handle_pause(ctx, dpy);
+                break;
+            }
+        case EXTERNAL_RESUME:
+            {  // resume case
+                ALOGD("%s Received resume event",__FUNCTION__);
+                //Treat Resume as Online event
+                //Since external didnt have any pipes, force primary to give up
+                //its pipes; we don't allow inter-mixer pipe transfers.
+                handle_resume(ctx, dpy);
+                break;
+            }
     default:
         {
             ALOGE("%s: Invalid state to swtich:%d", __FUNCTION__, switch_state);
@@ -220,7 +288,7 @@ static void *uevent_loop(void *param)
     }
 
     while(1) {
-        len = uevent_next_event(udata, (int)sizeof(udata) - 2);
+        len = uevent_next_event(udata, sizeof(udata) - 2);
         handle_uevent(ctx, udata, len);
     }
 

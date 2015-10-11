@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2013-2015 The Linux Foundation. All rights reserved.
+* Copyright (c) 2013 The Linux Foundation. All rights reserved.
 *
 * Redistribution and use in source and binary forms, with or without
 * modification, are permitted provided that the following conditions are
@@ -37,7 +37,7 @@ namespace qdutils {
 
 int isExternalConnected(void) {
     int ret;
-    status_t err = (status_t) FAILED_TRANSACTION;
+    status_t err = FAILED_TRANSACTION;
     sp<IQService> binder = getBinder();
     Parcel inParcel, outParcel;
     if(binder != NULL) {
@@ -54,7 +54,7 @@ int isExternalConnected(void) {
 }
 
 int getDisplayAttributes(int dpy, DisplayAttributes_t& dpyattr) {
-    status_t err = (status_t) FAILED_TRANSACTION;
+    status_t err = FAILED_TRANSACTION;
     sp<IQService> binder = getBinder();
     Parcel inParcel, outParcel;
     inParcel.writeInt32(dpy);
@@ -76,7 +76,7 @@ int getDisplayAttributes(int dpy, DisplayAttributes_t& dpyattr) {
 }
 
 int setHSIC(int dpy, const HSICData_t& hsic_data) {
-    status_t err = (status_t) FAILED_TRANSACTION;
+    status_t err = FAILED_TRANSACTION;
     sp<IQService> binder = getBinder();
     Parcel inParcel, outParcel;
     inParcel.writeInt32(dpy);
@@ -93,7 +93,7 @@ int setHSIC(int dpy, const HSICData_t& hsic_data) {
 }
 
 int getDisplayVisibleRegion(int dpy, hwc_rect_t &rect) {
-    status_t err = (status_t) FAILED_TRANSACTION;
+    status_t err = FAILED_TRANSACTION;
     sp<IQService> binder = getBinder();
     Parcel inParcel, outParcel;
     inParcel.writeInt32(dpy);
@@ -134,24 +134,6 @@ int setViewFrame(int dpy, int l, int t, int r, int b) {
     return err;
 }
 
-int setSecondaryDisplayStatus(int dpy, uint32_t status) {
-    status_t err = (status_t) FAILED_TRANSACTION;
-    sp<IQService> binder = getBinder();
-    Parcel inParcel, outParcel;
-    inParcel.writeInt32(dpy);
-    inParcel.writeInt32(status);
-
-    if(binder != NULL) {
-        err = binder->dispatch(IQService::SET_SECONDARY_DISPLAY_STATUS,
-                &inParcel, &outParcel);
-    }
-    if(err)
-        ALOGE("%s: Failed for dpy %d status = %d err=%d", __FUNCTION__, dpy,
-                                                        status, err);
-
-    return err;
-}
-
 int configureDynRefreshRate(uint32_t op, uint32_t refreshRate) {
     status_t err = (status_t) FAILED_TRANSACTION;
     sp<IQService> binder = getBinder();
@@ -171,21 +153,3 @@ int configureDynRefreshRate(uint32_t op, uint32_t refreshRate) {
 }
 
 }; //namespace
-
-// ----------------------------------------------------------------------------
-// Screen refresh for native daemons linking dynamically to libqdutils
-// ----------------------------------------------------------------------------
-extern "C" int refreshScreen() {
-    int ret = 0;
-    ret = screenRefresh();
-    return ret;
-}
-
-// ----------------------------------------------------------------------------
-// Native daemons needs to send enable partial update ack for PU to enable
-// ----------------------------------------------------------------------------
-extern "C" int setPartialUpdateState() {
-    int ret = 0;
-    ret = setPartialUpdate(IQService::ENABLE_PARTIAL_UPDATE);
-    return ret;
-}

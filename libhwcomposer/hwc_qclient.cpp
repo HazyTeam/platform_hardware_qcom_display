@@ -1,5 +1,5 @@
 /*
- *  Copyright (c) 2013-15, The Linux Foundation. All rights reserved.
+ *  Copyright (c) 2013-14, The Linux Foundation. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -30,21 +30,15 @@
 #include <hwc_qclient.h>
 #include <IQService.h>
 #include <hwc_utils.h>
-#include <mdp_version.h>
-#include <hwc_mdpcomp.h>
-#include <hwc_virtual.h>
-#include <overlay.h>
+#include <hwc_vpuclient.h>
 #include <display_config.h>
-#include <hwc_qdcm.h>
 
 #define QCLIENT_DEBUG 0
 
 using namespace android;
+using namespace qdutils;
 using namespace qService;
 using namespace qhwc;
-using namespace overlay;
-using namespace qdutils;
-using namespace qQdcm;
 
 namespace qClient {
 
@@ -61,39 +55,34 @@ QClient::~QClient()
 }
 
 static void securing(hwc_context_t *ctx, uint32_t startEnd) {
+    Locker::Autolock _sl(ctx->mDrawLock);
     //The only way to make this class in this process subscribe to media
     //player's death.
     IMediaDeathNotifier::getMediaPlayerService();
 
-    ctx->mDrawLock.lock();
     ctx->mSecuring = startEnd;
     //We're done securing
     if(startEnd == IQService::END)
         ctx->mSecureMode = true;
-    ctx->mDrawLock.unlock();
-
     if(ctx->proc)
         ctx->proc->invalidate(ctx->proc);
 }
 
 static void unsecuring(hwc_context_t *ctx, uint32_t startEnd) {
-    ctx->mDrawLock.lock();
+    Locker::Autolock _sl(ctx->mDrawLock);
     ctx->mSecuring = startEnd;
     //We're done unsecuring
     if(startEnd == IQService::END)
         ctx->mSecureMode = false;
-    ctx->mDrawLock.unlock();
-
     if(ctx->proc)
         ctx->proc->invalidate(ctx->proc);
 }
 
 void QClient::MPDeathNotifier::died() {
-    mHwcContext->mDrawLock.lock();
+    Locker::Autolock _sl(mHwcContext->mDrawLock);
     ALOGD_IF(QCLIENT_DEBUG, "Media Player died");
     mHwcContext->mSecuring = false;
     mHwcContext->mSecureMode = false;
-    mHwcContext->mDrawLock.unlock();
     if(mHwcContext->proc)
         mHwcContext->proc->invalidate(mHwcContext->proc);
 }
@@ -104,6 +93,17 @@ static android::status_t screenRefresh(hwc_context_t *ctx) {
         ctx->proc->invalidate(ctx->proc);
         result = NO_ERROR;
     }
+    return result;
+}
+
+static android::status_t vpuCommand(hwc_context_t *ctx,
+        uint32_t command,
+        const Parcel* inParcel,
+        Parcel* outParcel) {
+    status_t result = NO_INIT;
+#ifdef VPU_TARGET
+    result = ctx->mVPUClient->processCommand(command, inParcel, outParcel);
+#endif
     return result;
 }
 
@@ -121,21 +121,15 @@ static void getDisplayAttributes(hwc_context_t* ctx, const Parcel* inParcel,
         Parcel* outParcel) {
     int dpy = inParcel->readInt32();
     outParcel->writeInt32(ctx->dpyAttr[dpy].vsync_period);
-    if (ctx->dpyAttr[dpy].customFBSize) {
-        outParcel->writeInt32(ctx->dpyAttr[dpy].xres_new);
-        outParcel->writeInt32(ctx->dpyAttr[dpy].yres_new);
-    } else {
-        outParcel->writeInt32(ctx->dpyAttr[dpy].xres);
-        outParcel->writeInt32(ctx->dpyAttr[dpy].yres);
-    }
+    outParcel->writeInt32(ctx->dpyAttr[dpy].xres);
+    outParcel->writeInt32(ctx->dpyAttr[dpy].yres);
     outParcel->writeFloat(ctx->dpyAttr[dpy].xdpi);
     outParcel->writeFloat(ctx->dpyAttr[dpy].ydpi);
     //XXX: Need to check what to return for HDMI
     outParcel->writeInt32(ctx->mMDP.panel);
 }
-static void setHSIC(const Parcel* inParcel) {
+static void setHSIC(hwc_context_t* ctx, const Parcel* inParcel) {
     int dpy = inParcel->readInt32();
-    ALOGD_IF(0, "In %s: dpy = %d", __FUNCTION__, dpy);
     HSICData_t hsic_data;
     hsic_data.hue = inParcel->readInt32();
     hsic_data.saturation = inParcel->readFloat();
@@ -174,30 +168,37 @@ static status_t getDisplayVisibleRegion(hwc_context_t* ctx, int dpy,
     }
 }
 
-// USed for setting the secondary(hdmi/wfd) status
-static void setSecondaryDisplayStatus(hwc_context_t *ctx,
-                                      const Parcel* inParcel) {
-    uint32_t dpy = inParcel->readInt32();
-    uint32_t status = inParcel->readInt32();
-    ALOGD_IF(QCLIENT_DEBUG, "%s: dpy = %d status = %s", __FUNCTION__,
-                                        dpy, getExternalDisplayState(status));
-
-    if(dpy > HWC_DISPLAY_PRIMARY && dpy <= HWC_DISPLAY_VIRTUAL) {
-        if(dpy == HWC_DISPLAY_VIRTUAL && status == qdutils::EXTERNAL_OFFLINE) {
-            ctx->mWfdSyncLock.lock();
-            ctx->mWfdSyncLock.signal();
-            ctx->mWfdSyncLock.unlock();
-        } else if(status == qdutils::EXTERNAL_PAUSE) {
-            handle_pause(ctx, dpy);
-        } else if(status == qdutils::EXTERNAL_RESUME) {
-            handle_resume(ctx, dpy);
-        }
+static void pauseWFD(hwc_context_t *ctx, uint32_t pause) {
+    /* TODO: Will remove pauseWFD once all the clients start using
+     * setWfdStatus to indicate the status of WFD display
+     */
+    int dpy = HWC_DISPLAY_VIRTUAL;
+    if(pause) {
+        //WFD Pause
+        handle_pause(ctx, dpy);
     } else {
-        ALOGE("%s: Invalid dpy %d", __FUNCTION__, dpy);
-        return;
+        //WFD Resume
+        handle_resume(ctx, dpy);
     }
 }
 
+static void setWfdStatus(hwc_context_t *ctx, uint32_t wfdStatus) {
+
+    ALOGD_IF(HWC_WFDDISPSYNC_LOG,
+             "%s: Received a binder call that WFD state is %s",
+             __FUNCTION__,getExternalDisplayState(wfdStatus));
+    int dpy = HWC_DISPLAY_VIRTUAL;
+
+    if(wfdStatus == EXTERNAL_OFFLINE) {
+        ctx->mWfdSyncLock.lock();
+        ctx->mWfdSyncLock.signal();
+        ctx->mWfdSyncLock.unlock();
+    } else if(wfdStatus == EXTERNAL_PAUSE) {
+        handle_pause(ctx, dpy);
+    } else if(wfdStatus == EXTERNAL_RESUME) {
+        handle_resume(ctx, dpy);
+    }
+}
 
 static status_t setViewFrame(hwc_context_t* ctx, const Parcel* inParcel) {
     int dpy = inParcel->readInt32();
@@ -216,41 +217,6 @@ static status_t setViewFrame(hwc_context_t* ctx, const Parcel* inParcel) {
         ALOGE("In %s: invalid dpy index %d", __FUNCTION__, dpy);
         return BAD_VALUE;
     }
-}
-
-static void toggleDynamicDebug(hwc_context_t* ctx, const Parcel* inParcel) {
-    int debug_type = inParcel->readInt32();
-    bool enable = !!inParcel->readInt32();
-    ALOGD("%s: debug_type: %d enable:%d",
-            __FUNCTION__, debug_type, enable);
-    Locker::Autolock _sl(ctx->mDrawLock);
-    switch (debug_type) {
-        //break is ignored for DEBUG_ALL to toggle all of them at once
-        case IQService::DEBUG_ALL:
-        case IQService::DEBUG_MDPCOMP:
-            qhwc::MDPComp::dynamicDebug(enable);
-            if (debug_type != IQService::DEBUG_ALL)
-                break;
-        case IQService::DEBUG_VSYNC:
-            ctx->vstate.debug = enable;
-            if (debug_type != IQService::DEBUG_ALL)
-                break;
-        case IQService::DEBUG_VD:
-            HWCVirtualVDS::dynamicDebug(enable);
-            if (debug_type != IQService::DEBUG_ALL)
-                break;
-        case IQService::DEBUG_PIPE_LIFECYCLE:
-            Overlay::debugPipeLifecycle(enable);
-            if (debug_type != IQService::DEBUG_ALL)
-                break;
-    }
-}
-
-static void setIdleTimeout(hwc_context_t* ctx, const Parcel* inParcel) {
-    uint32_t timeout = (uint32_t)inParcel->readInt32();
-    ALOGD("%s :%u ms", __FUNCTION__, timeout);
-    Locker::Autolock _sl(ctx->mDrawLock);
-    MDPComp::setIdleTimeout(timeout);
 }
 
 static void configureDynRefreshRate(hwc_context_t* ctx,
@@ -295,50 +261,14 @@ static void configureDynRefreshRate(hwc_context_t* ctx,
     }
 }
 
-static status_t setPartialUpdateState(hwc_context_t *ctx, uint32_t state) {
-    ALOGD("%s: state: %d", __FUNCTION__, state);
-    switch(state) {
-        case IQService::PREF_PARTIAL_UPDATE:
-            if(qhwc::MDPComp::setPartialUpdatePref(ctx, true) < 0)
-                return NO_INIT;
-            return NO_ERROR;
-        case IQService::PREF_POST_PROCESSING:
-            if(qhwc::MDPComp::setPartialUpdatePref(ctx, false) < 0)
-                return NO_INIT;
-            qhwc::MDPComp::enablePartialUpdate(false);
-            return NO_ERROR;
-        case IQService::ENABLE_PARTIAL_UPDATE:
-            qhwc::MDPComp::enablePartialUpdate(true);
-            return NO_ERROR;
-        default:
-            ALOGE("%s: Invalid state", __FUNCTION__);
-            return NO_ERROR;
-    };
-}
-
-static void toggleScreenUpdate(hwc_context_t* ctx, uint32_t on) {
-    ALOGD("%s: toggle update: %d", __FUNCTION__, on);
-    if (on == 0) {
-        ctx->mDrawLock.lock();
-        ctx->dpyAttr[HWC_DISPLAY_PRIMARY].isPause = true;
-        ctx->mOverlay->configBegin();
-        ctx->mOverlay->configDone();
-        ctx->mRotMgr->clear();
-        if(!Overlay::displayCommit(ctx->dpyAttr[0].fd)) {
-            ALOGE("%s: Display commit failed", __FUNCTION__);
-        }
-        ctx->mDrawLock.unlock();
-    } else {
-        ctx->mDrawLock.lock();
-        ctx->dpyAttr[HWC_DISPLAY_PRIMARY].isPause = false;
-        ctx->mDrawLock.unlock();
-        ctx->proc->invalidate(ctx->proc);
-    }
-}
-
 status_t QClient::notifyCallback(uint32_t command, const Parcel* inParcel,
         Parcel* outParcel) {
     status_t ret = NO_ERROR;
+
+    if (command > IQService::VPU_COMMAND_LIST_START &&
+        command < IQService::VPU_COMMAND_LIST_END) {
+        return vpuCommand(mHwcContext, command, inParcel, outParcel);
+    }
 
     switch(command) {
         case IQService::SECURING:
@@ -367,30 +297,22 @@ status_t QClient::notifyCallback(uint32_t command, const Parcel* inParcel,
             getDisplayAttributes(mHwcContext, inParcel, outParcel);
             break;
         case IQService::SET_HSIC_DATA:
-            setHSIC(inParcel);
+            setHSIC(mHwcContext, inParcel);
             break;
-        case IQService::SET_SECONDARY_DISPLAY_STATUS:
-            setSecondaryDisplayStatus(mHwcContext, inParcel);
+        case IQService::PAUSE_WFD:
+            pauseWFD(mHwcContext, inParcel->readInt32());
+            break;
+        case IQService::SET_WFD_STATUS:
+            setWfdStatus(mHwcContext,inParcel->readInt32());
             break;
         case IQService::SET_VIEW_FRAME:
             setViewFrame(mHwcContext, inParcel);
             break;
-        case IQService::DYNAMIC_DEBUG:
-            toggleDynamicDebug(mHwcContext, inParcel);
-            break;
-        case IQService::SET_IDLE_TIMEOUT:
-            setIdleTimeout(mHwcContext, inParcel);
-            break;
-        case IQService::SET_PARTIAL_UPDATE:
-            ret = setPartialUpdateState(mHwcContext, inParcel->readInt32());
+        case IQService::SET_PTOR_MODE:
+            mHwcContext->mIsPTOREnabled = inParcel->readInt32();
             break;
         case IQService::CONFIGURE_DYN_REFRESH_RATE:
             configureDynRefreshRate(mHwcContext, inParcel);
-        case IQService::QDCM_SVC_CMDS:
-            qdcmCmdsHandler(mHwcContext, inParcel, outParcel);
-            break;
-        case IQService::TOGGLE_SCREEN_UPDATE:
-            toggleScreenUpdate(mHwcContext, inParcel->readInt32());
             break;
         default:
             ret = NO_ERROR;

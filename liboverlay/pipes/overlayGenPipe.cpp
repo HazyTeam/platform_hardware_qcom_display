@@ -32,16 +32,18 @@
 
 namespace overlay {
 
-GenericPipe::GenericPipe(const int& dpy) : mDpy(dpy),
-    mCtrl(new Ctrl(dpy)), mData(new Data(dpy)) {
+GenericPipe::GenericPipe(const int& dpy) : mDpy(dpy), mRotDownscaleOpt(false),
+    pipeState(CLOSED), mCtrl(new Ctrl(dpy)), mData(new Data(dpy)) {
 }
 
 GenericPipe::~GenericPipe() {
     delete mCtrl;
     delete mData;
+    setClosed();
 }
 
 void GenericPipe::setSource(const utils::PipeArgs& args) {
+    mRotDownscaleOpt = args.rotFlags & utils::ROT_DOWNSCALE_ENABLED;
     mCtrl->setSource(args);
 }
 
@@ -71,10 +73,26 @@ void GenericPipe::setPipeType(const utils::eMdpPipeType& pType) {
 }
 
 bool GenericPipe::commit() {
-    return mCtrl->commit();
+    bool ret = false;
+    int downscale_factor = utils::ROT_DS_NONE;
+
+    if(mRotDownscaleOpt) {
+        ovutils::Dim src(mCtrl->getCrop());
+        ovutils::Dim dst(mCtrl->getPosition());
+        downscale_factor = ovutils::getDownscaleFactor(
+                src.w, src.h, dst.w, dst.h);
+    }
+
+    mCtrl->setDownscale(downscale_factor);
+    ret = mCtrl->commit();
+
+    pipeState = ret ? OPEN : CLOSED;
+    return ret;
 }
 
 bool GenericPipe::queueBuffer(int fd, uint32_t offset) {
+    //TODO Move pipe-id transfer to CtrlData class. Make ctrl and data private.
+    OVASSERT(isOpen(), "State is closed, cannot queueBuffer");
     int pipeId = mCtrl->getPipeId();
     OVASSERT(-1 != pipeId, "Ctrl ID should not be -1");
     // set pipe id from ctrl to data
@@ -83,18 +101,19 @@ bool GenericPipe::queueBuffer(int fd, uint32_t offset) {
     return mData->queueBuffer(fd, offset);
 }
 
+int GenericPipe::getCtrlFd() const {
+    return mCtrl->getFd();
+}
+
 utils::Dim GenericPipe::getCrop() const
 {
     return mCtrl->getCrop();
 }
 
-uint8_t GenericPipe::getPriority() const {
-    return mCtrl->getPriority();
-}
-
 void GenericPipe::dump() const
 {
     ALOGE("== Dump Generic pipe start ==");
+    ALOGE("pipe state = %d", (int)pipeState);
     mCtrl->dump();
     mData->dump();
     ALOGE("== Dump Generic pipe end ==");
@@ -103,6 +122,19 @@ void GenericPipe::dump() const
 void GenericPipe::getDump(char *buf, size_t len) {
     mCtrl->getDump(buf, len);
     mData->getDump(buf, len);
+}
+
+bool GenericPipe::isClosed() const  {
+    return (pipeState == CLOSED);
+}
+
+bool GenericPipe::isOpen() const  {
+    return (pipeState == OPEN);
+}
+
+bool GenericPipe::setClosed() {
+    pipeState = CLOSED;
+    return true;
 }
 
 int GenericPipe::getPipeId() {

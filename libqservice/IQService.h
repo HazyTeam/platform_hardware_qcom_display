@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2010 The Android Open Source Project
- * Copyright (C) 2012-2015, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2012-2014, The Linux Foundation. All rights reserved.
  *
  * Not a Contribution, Apache license notifications and license are
  * retained for attribution purposes only.
@@ -49,35 +49,20 @@ public:
         GET_DISPLAY_ATTRIBUTES,  // Get display attributes
         SET_HSIC_DATA,           // Set HSIC on dspp
         GET_DISPLAY_VISIBLE_REGION,  // Get the visibleRegion for dpy
-        SET_SECONDARY_DISPLAY_STATUS,  // Sets secondary display status
-        SET_PARTIAL_UPDATE,      // Preference on partial update feature
+        PAUSE_WFD,               // Pause/Resume WFD
+        SET_WFD_STATUS,          // Set if wfd connection is on/off
+        SET_PTOR_MODE, //set PTOR mode enable or disable
+        VPU_COMMAND_LIST_START = 100, //Reserved block for VPU commands
+        VPU_COMMAND_LIST_END   = 200,
         SET_VIEW_FRAME,          // Set view frame of display
-        DYNAMIC_DEBUG,           // Enable more logging on the fly
-        SET_IDLE_TIMEOUT,        // Set idle timeout for GPU fallback
         /* Enable/Disable/Set refresh rate dynamically */
         CONFIGURE_DYN_REFRESH_RATE,
-        QDCM_SVC_CMDS,           // request QDCM services.
-        TOGGLE_SCREEN_UPDATE,    // Provides ability to disable screen updates
         COMMAND_LIST_END = 400,
     };
 
     enum {
         END = 0,
         START,
-    };
-
-    enum {
-        DEBUG_ALL,
-        DEBUG_MDPCOMP,
-        DEBUG_VSYNC,
-        DEBUG_VD,
-        DEBUG_PIPE_LIFECYCLE,
-    };
-
-    enum {
-        PREF_POST_PROCESSING,
-        PREF_PARTIAL_UPDATE,
-        ENABLE_PARTIAL_UPDATE,
     };
 
     // Register a client that can be notified

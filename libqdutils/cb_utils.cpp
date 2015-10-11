@@ -59,7 +59,7 @@ int CBUtils::uiClearRegion(hwc_display_contents_1_t* list,
         int version, LayerProp *layerProp,  hwc_rect_t dirtyRect,
             copybit_device_t *copybit, private_handle_t *renderBuffer) {
 
-    size_t last = list->numHwLayers - 1;
+    uint32_t last = list->numHwLayers - 1;
     hwc_rect_t fbFrame = list->hwLayers[last].displayFrame;
     Rect fbFrameRect(fbFrame.left,fbFrame.top,fbFrame.right,fbFrame.bottom);
     Region wormholeRegion(fbFrameRect);
@@ -75,7 +75,7 @@ int CBUtils::uiClearRegion(hwc_display_contents_1_t* list,
    }
     if(cb_swap_rect::getInstance().checkSwapRectFeature_on() == true){
       wormholeRegion.set(0,0);
-      for(size_t i = 0 ; i < last; i++) {
+      for(uint32_t i = 0 ; i < last; i++) {
          if(((list->hwLayers[i].blending == HWC_BLENDING_NONE) &&
            (list->hwLayers[i].planeAlpha == 0xFF)) ||
            !(layerProp[i].mFlags & HWC_COPYBIT) ||
@@ -87,7 +87,7 @@ int CBUtils::uiClearRegion(hwc_display_contents_1_t* list,
          wormholeRegion.set(tmpRect);
       }
    }else{
-     for (size_t i = 0 ; i < last; i++) {
+     for (uint32_t i = 0 ; i < last; i++) {
         // need to take care only in per pixel blending.
         // Restrict calculation only for copybit layers.
         if((list->hwLayers[i].blending != HWC_BLENDING_NONE) ||

@@ -27,40 +27,67 @@
 * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#ifndef HWC_AD_H
-#define HWC_AD_H
+#include <dlfcn.h>
+#include "hwc_vpuclient.h"
+#include "hwc_utils.h"
+#include <vpu/vpu.h>
+#include <binder/Parcel.h>
 
-#include <overlayUtils.h>
-#include <hwc_utils.h>
 
-struct hwc_context_t;
-
+using namespace vpu;
+using namespace android;
 namespace qhwc {
 
-class AssertiveDisplay {
-public:
-    AssertiveDisplay(hwc_context_t *ctx);
-    void markDoable(hwc_context_t *ctx, const hwc_display_contents_1_t* list);
-    bool prepare(hwc_context_t *ctx, const hwc_rect_t& crop,
-            const overlay::utils::Whf& whf,
-            const private_handle_t *hnd);
-    bool draw(hwc_context_t *ctx, int fd, uint32_t offset);
-    //Resets a few members on each draw round
-    void reset() { mDoable = false;
-            mDest = overlay::utils::OV_INVALID;
-    }
-    bool isDoable() const { return mDoable; }
-    int getDstFd(hwc_context_t *ctx) const;
-    uint32_t getDstOffset(hwc_context_t *ctx) const;
-
-private:
-    bool mDoable;
-    bool mTurnedOff;
-    //State of feature existence on certain devices and configs.
-    bool mFeatureEnabled;
-    overlay::utils::eDest mDest;
-    void turnOffAD();
-};
-
+VPUClient::VPUClient()
+{
+    mVPULib = dlopen("libvpu.so", RTLD_NOW);
+    VPU* (*init)();
+    *(void **) &init =  dlsym(mVPULib, "getObject");
+    if(init)
+        mVPU = init();
+    else
+        mVPU = NULL;
 }
-#endif
+
+VPUClient::~VPUClient()
+{
+    void (*destroy) (VPU*);
+    *(void **) &destroy = dlsym(mVPULib, "deleteObject");
+    dlclose(mVPULib);
+}
+
+int VPUClient::prepare(hwc_context_t *ctx,
+                                hwc_display_contents_1_t* list)
+{
+    int err = 0;
+    if(!mVPU)
+        return err;
+    // * Check VPU status
+    // * Check session availability
+    // * Other individual checks
+    // Do not pass hwc context/list
+    // Mark buffers to be drawn for VPU
+    return err;
+}
+
+int VPUClient::draw(hwc_context_t *ctx,
+                             hwc_display_contents_1_t* list)
+{
+    int err = 0;
+    if(!mVPU)
+        return err;
+    // Queue buffers to VPU
+    return err;
+}
+
+int VPUClient::processCommand(uint32_t command,
+        const Parcel* inParcel, Parcel* outParcel)
+{
+    if(!mVPU)
+        return 0;
+    //XXX: Enable when VPU enables it
+    //return mVPU->processCommand(command, inParcel, outParcel);
+    return 0;
+}
+
+}; // namespace qhwc

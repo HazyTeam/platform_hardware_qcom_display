@@ -77,10 +77,10 @@ public:
     /* retrieve crop data */
     utils::Dim getCrop() const;
     utils::Dim getPosition() const;
+    /* Set downscale */
+    void setDownscale(int dscale_factor);
     /* Update the src format based on rotator's dest */
     void updateSrcFormat(const uint32_t& rotDstFormat);
-    /* return pipe priority */
-    uint8_t getPriority() const;
     /* dump the state of the object */
     void dump() const;
     /* Return the dump in the specified buffer */
@@ -211,8 +211,8 @@ inline utils::Dim Ctrl::getPosition() const {
     return mMdp->getDstRectDim();
 }
 
-inline uint8_t Ctrl::getPriority() const {
-    return mMdp->getPriority();
+inline void Ctrl::setDownscale(int dscale_factor) {
+    mMdp->setDownscale(dscale_factor);
 }
 
 inline void Ctrl::getDump(char *buf, size_t len) {

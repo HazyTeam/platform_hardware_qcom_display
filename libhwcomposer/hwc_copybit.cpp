@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2010 The Android Open Source Project
- * Copyright (C) 2012-2015, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2012-2013, The Linux Foundation. All rights reserved.
  *
  * Not a Contribution.
  *
@@ -28,7 +28,6 @@
 #include "cb_swap_rect.h"
 #include "math.h"
 #include "sync/sync.h"
-
 using namespace qdutils;
 namespace qhwc {
 
@@ -40,7 +39,7 @@ struct region_iterator : public copybit_region_t {
 
     region_iterator(hwc_region_t region) {
         mRegion = region;
-        r.end = (int)region.numRects;
+        r.end = region.numRects;
         r.current = 0;
         this->next = iterate;
     }
@@ -145,7 +144,7 @@ bool CopyBit::canUseCopybitForRGB(hwc_context_t *ctx,
         int fbWidth =  ctx->dpyAttr[dpy].xres;
         int fbHeight =  ctx->dpyAttr[dpy].yres;
         unsigned int fbArea = (fbWidth * fbHeight);
-        unsigned int renderArea = getRGBRenderingArea(ctx, list);
+        unsigned int renderArea = getRGBRenderingArea(list);
             ALOGD_IF (DEBUG_COPYBIT, "%s:renderArea %u, fbArea %u",
                                   __FUNCTION__, renderArea, fbArea);
         double dynThreshold = mDynThreshold;
@@ -165,8 +164,8 @@ bool CopyBit::canUseCopybitForRGB(hwc_context_t *ctx,
     return false;
 }
 
-unsigned int CopyBit::getRGBRenderingArea (const hwc_context_t *ctx,
-                                     const hwc_display_contents_1_t *list) {
+unsigned int CopyBit::getRGBRenderingArea
+                                    (const hwc_display_contents_1_t *list) {
     //Calculates total rendering area for RGB layers
     unsigned int renderArea = 0;
     unsigned int w=0, h=0;
@@ -175,112 +174,13 @@ unsigned int CopyBit::getRGBRenderingArea (const hwc_context_t *ctx,
     for (unsigned int i=0; i<list->numHwLayers -1; i++) {
          private_handle_t *hnd = (private_handle_t *)list->hwLayers[i].handle;
          if (hnd) {
-             if (BUFFER_TYPE_UI == hnd->bufferType && !ctx->copybitDrop[i]) {
+             if (BUFFER_TYPE_UI == hnd->bufferType) {
                  getLayerResolution(&list->hwLayers[i], w, h);
                  renderArea += (w*h);
              }
          }
     }
     return renderArea;
-}
-
-bool CopyBit::isLayerChanging(hwc_context_t *ctx,
-                                 hwc_display_contents_1_t *list, int k) {
-    if((mLayerCache.hnd[k] != list->hwLayers[k].handle) ||
-            (mLayerCache.drop[k] != ctx->copybitDrop[k]) ||
-            (mLayerCache.displayFrame[k].left !=
-                         list->hwLayers[k].displayFrame.left) ||
-            (mLayerCache.displayFrame[k].top !=
-                         list->hwLayers[k].displayFrame.top) ||
-            (mLayerCache.displayFrame[k].right !=
-                         list->hwLayers[k].displayFrame.right) ||
-            (mLayerCache.displayFrame[k].bottom !=
-                         list->hwLayers[k].displayFrame.bottom)) {
-        return 1;
-    }
-    return 0;
-}
-
-bool CopyBit::prepareSwapRect(hwc_context_t *ctx,
-                           hwc_display_contents_1_t *list,
-                           int dpy) {
-   bool canUseSwapRect = 0;
-   hwc_rect_t dirtyRect = {0, 0, 0, 0};
-   hwc_rect_t displayRect = {0, 0, 0, 0};
-   hwc_rect fullFrame = (struct hwc_rect) {0, 0,(int)ctx->dpyAttr[dpy].xres,
-                                                (int)ctx->dpyAttr[dpy].yres};
-   if((mLayerCache.layerCount != ctx->listStats[dpy].numAppLayers) ||
-         list->flags & HWC_GEOMETRY_CHANGED || not mSwapRectEnable) {
-        mLayerCache.reset();
-        mFbCache.reset();
-        mLayerCache.updateCounts(ctx,list,dpy);
-        mDirtyRect = displayRect;
-        return 0;
-    }
-
-    int updatingLayerCount = 0;
-    for (int k = ctx->listStats[dpy].numAppLayers-1; k >= 0 ; k--){
-       //swap rect will kick in only for single updating layer
-       if(isLayerChanging(ctx, list, k)) {
-           updatingLayerCount ++;
-           hwc_layer_1_t layer = list->hwLayers[k];
-           canUseSwapRect = 1;
-#ifdef QTI_BSP
-           dirtyRect = getUnion(dirtyRect, calculateDirtyRect(&layer,fullFrame));
-#endif
-           displayRect = getUnion(displayRect, layer.displayFrame);
-       }
-    }
-    //since we are using more than one framebuffers,we have to
-    //kick in swap rect only if we are getting continuous same
-    //dirty rect for same layer at least equal of number of
-    //framebuffers
-
-      if (canUseSwapRect || updatingLayerCount == 0) {
-        if (updatingLayerCount == 0) {
-            dirtyRect.left = INVALID_DIMENSION;
-            dirtyRect.top = INVALID_DIMENSION;
-            dirtyRect.right = INVALID_DIMENSION;
-            dirtyRect.bottom = INVALID_DIMENSION;
-            canUseSwapRect = 1;
-        }
-
-       for (int k = ctx->listStats[dpy].numAppLayers-1; k >= 0 ; k--) {
-           //disable swap rect in case of scaling and video .
-           private_handle_t *hnd =(private_handle_t *)list->hwLayers[k].handle;
-           if(needsScaling(&list->hwLayers[k])||( hnd && isYuvBuffer(hnd)) ||
-                   (list->hwLayers[k].transform & HAL_TRANSFORM_ROT_90)) {
-               mFbCache.reset();
-               displayRect.bottom = 0;
-               displayRect.top = 0;
-               displayRect.right = 0;
-               displayRect.bottom = 0;
-               mDirtyRect = displayRect;
-               return 0;
-           }
-       }
-
-       if(mFbCache.getUnchangedFbDRCount(dirtyRect, displayRect) <
-                                             NUM_RENDER_BUFFERS) {
-              mFbCache.insertAndUpdateFbCache(dirtyRect, displayRect);
-              canUseSwapRect =  0;
-              displayRect.bottom = 0;
-              displayRect.top = 0;
-              displayRect.right = 0;
-              displayRect.bottom = 0;
-       }
-    } else {
-       mFbCache.reset();
-       canUseSwapRect =  0;
-       displayRect.bottom = 0;
-       displayRect.top = 0;
-       displayRect.right = 0;
-       displayRect.bottom = 0;
-
-    }
-    mDirtyRect = displayRect;
-    mLayerCache.updateCounts(ctx,list,dpy);
-    return canUseSwapRect;
 }
 
 bool CopyBit::prepareOverlap(hwc_context_t *ctx,
@@ -306,9 +206,9 @@ bool CopyBit::prepareOverlap(hwc_context_t *ctx,
         // render buffer width will be the max of two layers
         // Align Widht and height to 32, Mdp would be configured
         // with Aligned overlap w/h
-        finalW = max(finalW, ALIGN((overlap.right - overlap.left), 32));
+        finalW = max(finalW, (int)ALIGN((overlap.right - overlap.left), 32));
         finalH += ALIGN((overlap.bottom - overlap.top), 32);
-        if(finalH > ALIGN((overlap.bottom - overlap.top), 32)) {
+        if(finalH > (int)ALIGN((overlap.bottom - overlap.top), 32)) {
             // Calculate the dest top, left will always be zero
             ptorInfo->displayFrame[i].top = (finalH -
                                 (ALIGN((overlap.bottom - overlap.top), 32)));
@@ -341,6 +241,79 @@ bool CopyBit::prepareOverlap(hwc_context_t *ctx,
     return true;
 }
 
+
+bool CopyBit::prepareSwapRect(hwc_context_t *ctx,
+                           hwc_display_contents_1_t *list,
+                           int dpy) {
+   bool canUseSwapRect = 0;
+   hwc_rect_t dirtyRect = {0, 0, 0, 0};
+   hwc_rect_t displayRect = {0, 0, 0, 0};
+   hwc_rect fullFrame = (struct hwc_rect) {0, 0,(int)ctx->dpyAttr[dpy].xres,
+                                                (int)ctx->dpyAttr[dpy].yres};
+   if((mLayerCache.layerCount != ctx->listStats[dpy].numAppLayers) ||
+         list->flags & HWC_GEOMETRY_CHANGED || not mSwapRectEnable) {
+        mLayerCache.reset();
+        mFbCache.reset();
+        mLayerCache.updateCounts(ctx,list,dpy);
+        mDirtyRect = displayRect;
+        return 0;
+    }
+
+    int updatingLayerCount = 0;
+    for (int k = ctx->listStats[dpy].numAppLayers-1; k >= 0 ; k--){
+       //swap rect will kick in only for single updating layer
+       if(mLayerCache.hnd[k] != list->hwLayers[k].handle){
+           updatingLayerCount ++;
+           hwc_layer_1_t layer = list->hwLayers[k];
+           canUseSwapRect = 1;
+#ifdef QTI_BSP
+           dirtyRect = getUnion(dirtyRect, calculateDirtyRect(&layer,fullFrame));
+#endif
+           displayRect = getUnion(displayRect, layer.displayFrame);
+       }
+    }
+    //since we are using more than one framebuffers,we have to
+    //kick in swap rect only if we are getting continuous same
+    //dirty rect for same layer at least equal of number of
+    //framebuffers
+
+    if (canUseSwapRect || updatingLayerCount == 0) {
+       canUseSwapRect = 1;
+
+       for (int k = ctx->listStats[dpy].numAppLayers-1; k >= 0 ; k--){
+            //disable swap rect for overlapping visible layer(s)
+            hwc_rect_t displayFrame = list->hwLayers[k].displayFrame;
+            hwc_rect_t result = getIntersection(displayFrame,dirtyRect);
+            if((k != changingLayerIndex) && isValidRect(result)){
+               displayRect.bottom = 0;
+               displayRect.top = 0;
+               displayRect.right = 0;
+               displayRect.bottom = 0;
+               mDirtyRect = displayRect;
+               return 0;
+           }
+       }
+       mFbCache.insertAndUpdateFbCache(dirtyRect);
+       if(mFbCache.getUnchangedFbDRCount(dirtyRect) <
+                                             NUM_RENDER_BUFFERS)
+              canUseSwapRect =  0;
+              displayRect.bottom = 0;
+              displayRect.top = 0;
+              displayRect.right = 0;
+              displayRect.bottom = 0;
+    }else {
+       mFbCache.reset();
+       canUseSwapRect =  0;
+       displayRect.bottom = 0;
+       displayRect.top = 0;
+       displayRect.right = 0;
+       displayRect.bottom = 0;
+    }
+    mDirtyRect = displayRect;
+    mLayerCache.updateCounts(ctx,list,dpy);
+    return changingLayerIndex;
+}
+
 bool CopyBit::prepare(hwc_context_t *ctx, hwc_display_contents_1_t *list,
                                                             int dpy) {
 
@@ -348,13 +321,6 @@ bool CopyBit::prepare(hwc_context_t *ctx, hwc_display_contents_1_t *list,
         // No copybit device found - cannot use copybit
         return false;
     }
-
-    if(ctx->mThermalBurstMode) {
-        ALOGD_IF (DEBUG_COPYBIT, "%s:Copybit failed,"
-                "Running in Thermal Burst mode",__FUNCTION__);
-        return false;
-    }
-
     int compositionType = qdutils::QCCompositionType::
                                     getInstance().getCompositionType();
 
@@ -389,6 +355,8 @@ bool CopyBit::prepare(hwc_context_t *ctx, hwc_display_contents_1_t *list,
     bool useCopybitForYUV = canUseCopybitForYUV(ctx);
     bool useCopybitForRGB = canUseCopybitForRGB(ctx, list, dpy);
     LayerProp *layerProp = ctx->layerProp[dpy];
+    size_t fbLayerIndex = ctx->listStats[dpy].fbLayerIndex;
+    hwc_layer_1_t *fbLayer = &list->hwLayers[fbLayerIndex];
 
     // Following are MDP3 limitations for which we
     // need to fallback to GPU composition:
@@ -398,9 +366,6 @@ bool CopyBit::prepare(hwc_context_t *ctx, hwc_display_contents_1_t *list,
         for (int i = ctx->listStats[dpy].numAppLayers-1; i >= 0 ; i--) {
             int dst_h, dst_w, src_h, src_w;
             float dx, dy;
-            if(ctx->copybitDrop[i]) {
-                continue;
-            }
             hwc_layer_1_t *layer = (hwc_layer_1_t *) &list->hwLayers[i];
             if (layer->planeAlpha != 0xFF)
                 return true;
@@ -422,21 +387,13 @@ bool CopyBit::prepare(hwc_context_t *ctx, hwc_display_contents_1_t *list,
                          __FUNCTION__, dst_w,src_w,dst_h,src_h);
               return false;
             }
-            dx = (float)dst_w/(float)src_w;
-            dy = (float)dst_h/(float)src_h;
+            dx = (float)dst_w/src_w;
+            dy = (float)dst_h/src_h;
 
-            float scale_factor_max = MAX_SCALE_FACTOR;
-            float scale_factor_min = MIN_SCALE_FACTOR;
-
-            if (isAlphaPresent(layer)) {
-               scale_factor_max = MAX_SCALE_FACTOR/4;
-               scale_factor_min = MIN_SCALE_FACTOR*4;
-            }
-
-            if (dx > scale_factor_max || dx < scale_factor_min)
+            if (dx > MAX_SCALE_FACTOR || dx < MIN_SCALE_FACTOR)
                 return false;
 
-            if (dy > scale_factor_max || dy < scale_factor_min)
+            if (dy > MAX_SCALE_FACTOR || dy < MIN_SCALE_FACTOR)
                 return false;
         }
     }
@@ -468,12 +425,10 @@ bool CopyBit::prepare(hwc_context_t *ctx, hwc_display_contents_1_t *list,
         // Mark all layers to be drawn by copybit
         for (int i = ctx->listStats[dpy].numAppLayers-1; i >= 0 ; i--) {
             layerProp[i].mFlags |= HWC_COPYBIT;
-#ifdef QTI_BSP
             if (ctx->mMDP.version == qdutils::MDP_V3_0_4 ||
                ctx->mMDP.version == qdutils::MDP_V3_0_5)
                 list->hwLayers[i].compositionType = HWC_BLIT;
             else
-#endif
                 list->hwLayers[i].compositionType = HWC_OVERLAY;
         }
     }
@@ -504,7 +459,7 @@ bool CopyBit::drawUsingAppBufferComposition(hwc_context_t *ctx,
                                       hwc_display_contents_1_t *list,
                                       int dpy, int *copybitFd) {
      int layerCount = 0;
-     uint32_t last = (uint32_t)list->numHwLayers - 1;
+     uint32_t last = list->numHwLayers - 1;
      hwc_layer_1_t *fbLayer = &list->hwLayers[last];
      private_handle_t *fbhnd = (private_handle_t *)fbLayer->handle;
 
@@ -522,7 +477,6 @@ bool CopyBit::drawUsingAppBufferComposition(hwc_context_t *ctx,
     if(hnd && fbhnd && (hnd->size == fbhnd->size) &&
     (hnd->width == fbhnd->width) && (hnd->height == fbhnd->height)){
        if(tmpLayer->transform  ||
-        (list->flags & HWC_GEOMETRY_CHANGED) ||
        (!(hnd->format == HAL_PIXEL_FORMAT_RGBA_8888 ||
        hnd->format == HAL_PIXEL_FORMAT_RGBX_8888))  ||
                    (needsScaling(tmpLayer) == true)) {
@@ -558,17 +512,16 @@ bool CopyBit::drawUsingAppBufferComposition(hwc_context_t *ctx,
              list->hwLayers[abcRenderBufIdx].acquireFenceFd);
           }
           for(int i = abcRenderBufIdx + 1; i < layerCount; i++){
-             mSwapRect = 0;
              int retVal = drawLayerUsingCopybit(ctx,
-               &(list->hwLayers[i]),renderBuffer, 0);
+               &(list->hwLayers[i]),renderBuffer, 0, !i);
              if(retVal < 0) {
                 ALOGE("%s : Copybit failed", __FUNCTION__);
              }
           }
           // Get Release Fence FD of copybit for the App layer(s)
           copybit->flush_get_fence(copybit, copybitFd);
-          close(list->hwLayers[last].acquireFenceFd);
-          list->hwLayers[last].acquireFenceFd = -1;
+          close(list->hwLayers[abcRenderBufIdx].acquireFenceFd);
+          list->hwLayers[abcRenderBufIdx].acquireFenceFd = -1;
           return true;
        }
     }
@@ -596,7 +549,7 @@ bool  CopyBit::draw(hwc_context_t *ctx, hwc_display_contents_1_t *list,
     //render buffer
     if (ctx->mMDP.version == qdutils::MDP_V3_0_4 ||
         ctx->mMDP.version != qdutils::MDP_V3_0_5) {
-        last = (uint32_t)list->numHwLayers - 1;
+        last = list->numHwLayers - 1;
         renderBuffer = (private_handle_t *)list->hwLayers[last].handle;
     } else {
         renderBuffer = getCurrentRenderBuffer();
@@ -630,16 +583,16 @@ bool  CopyBit::draw(hwc_context_t *ctx, hwc_display_contents_1_t *list,
            mSwapRect = 0;
        }
     }
-
     // numAppLayers-1, as we iterate from 0th layer index with HWC_COPYBIT flag
     for (int i = 0; i <= (ctx->listStats[dpy].numAppLayers-1); i++) {
+        hwc_layer_1_t *layer = &list->hwLayers[i];
         if(!(layerProp[i].mFlags & HWC_COPYBIT)) {
             ALOGD_IF(DEBUG_COPYBIT, "%s: Not Marked for copybit", __FUNCTION__);
             continue;
         }
-        if(ctx->copybitDrop[i]) {
+        //skip non updating layers
+        if((mDirtyLayerIndex != -1) && (mDirtyLayerIndex != i) )
             continue;
-        }
         int ret = -1;
         if (list->hwLayers[i].acquireFenceFd != -1
                 && ctx->mMDP.version >= qdutils::MDP_V4_0) {
@@ -653,7 +606,7 @@ bool  CopyBit::draw(hwc_context_t *ctx, hwc_display_contents_1_t *list,
             list->hwLayers[i].acquireFenceFd = -1;
         }
         retVal = drawLayerUsingCopybit(ctx, &(list->hwLayers[i]),
-                                          renderBuffer, !i);
+                                                    renderBuffer, dpy, !i);
         copybitLayerCount++;
         if(retVal < 0) {
             ALOGE("%s : drawLayerUsingCopybit failed", __FUNCTION__);
@@ -856,8 +809,10 @@ int CopyBit::drawRectUsingCopybit(hwc_context_t *dev, hwc_layer_1_t *layer,
     return err;
 }
 
+
+
 int  CopyBit::drawLayerUsingCopybit(hwc_context_t *dev, hwc_layer_1_t *layer,
-                          private_handle_t *renderBuffer, bool isFG)
+                          private_handle_t *renderBuffer, int dpy, bool isFG)
 {
     hwc_context_t* ctx = (hwc_context_t*)(dev);
     int err = 0, acquireFd;
@@ -880,13 +835,7 @@ int  CopyBit::drawLayerUsingCopybit(hwc_context_t *dev, hwc_layer_1_t *layer,
         ALOGE("%s: Framebuffer handle is NULL", __FUNCTION__);
         return -1;
     }
-    uint32_t dynamic_fps = 0;
-#ifdef DYNAMIC_FPS
-    MetaData_t *mdata = hnd ? (MetaData_t *)hnd->base_metadata : NULL;
-    if (mdata && (mdata->operation & UPDATE_REFRESH_RATE)) {
-       dynamic_fps  = roundOff(mdata->refreshrate);
-    }
-#endif
+
     // Set the copybit source:
     copybit_image_t src;
     src.w = getWidth(hnd);
@@ -945,18 +894,11 @@ int  CopyBit::drawLayerUsingCopybit(hwc_context_t *dev, hwc_layer_1_t *layer,
 #ifdef QTI_BSP
     //change src and dst with dirtyRect
     if(mSwapRect) {
-      hwc_rect_t result = getIntersection(displayFrame, mDirtyRect);
-      if(!isValidRect(result))
-             return true;
-      dstRect.l = result.left;
-      dstRect.t = result.top;
-      dstRect.r = result.right;
-      dstRect.b = result.bottom;
-
-      srcRect.l += (result.left - displayFrame.left);
-      srcRect.t += (result.top - displayFrame.top);
-      srcRect.r -= (displayFrame.right - result.right);
-      srcRect.b -= (displayFrame.bottom - result.bottom);
+      srcRect.l = layer->dirtyRect.left;
+      srcRect.t = layer->dirtyRect.top;
+      srcRect.r = layer->dirtyRect.right;
+      srcRect.b = layer->dirtyRect.bottom;
+      dstRect = srcRect;
     }
 #endif
     // Copybit dst
@@ -995,8 +937,8 @@ int  CopyBit::drawLayerUsingCopybit(hwc_context_t *dev, hwc_layer_1_t *layer,
         return -1;
     }
 
-    float dsdx = (float)screen_w/(float)src_crop_width;
-    float dtdy = (float)screen_h/(float)src_crop_height;
+    float dsdx = (float)screen_w/src_crop_width;
+    float dtdy = (float)screen_h/src_crop_height;
 
     float scaleLimitMax = copybitsMaxScale * copybitsMaxScale;
     float scaleLimitMin = copybitsMinScale * copybitsMinScale;
@@ -1026,18 +968,16 @@ int  CopyBit::drawLayerUsingCopybit(hwc_context_t *dev, hwc_layer_1_t *layer,
        int tmp_w =  src_crop_width;
        int tmp_h =  src_crop_height;
 
-       if (dsdx > copybitsMaxScale)
-         tmp_w = (int)((float)src_crop_width*copybitsMaxScale);
-       if (dtdy > copybitsMaxScale)
-         tmp_h = (int)((float)src_crop_height*copybitsMaxScale);
-       // ceil the tmp_w and tmp_h value to maintain proper ratio
-       // b/w src and dst (should not cross the desired scale limit
-       // due to float -> int )
-       if (dsdx < 1/copybitsMinScale)
-         tmp_w = (int)ceil((float)src_crop_width/copybitsMinScale);
-       if (dtdy < 1/copybitsMinScale)
-         tmp_h = (int)ceil((float)src_crop_height/copybitsMinScale);
-
+       if (dsdx > copybitsMaxScale || dtdy > copybitsMaxScale ){
+         tmp_w = src_crop_width*copybitsMaxScale;
+         tmp_h = src_crop_height*copybitsMaxScale;
+       }else if (dsdx < 1/copybitsMinScale ||dtdy < 1/copybitsMinScale ){
+         // ceil the tmp_w and tmp_h value to maintain proper ratio
+         // b/w src and dst (should not cross the desired scale limit
+         // due to float -> int )
+         tmp_w = ceil(src_crop_width/copybitsMinScale);
+         tmp_h = ceil(src_crop_height/copybitsMinScale);
+       }
        ALOGD("%s:%d::tmp_w = %d,tmp_h = %d",__FUNCTION__,__LINE__,tmp_w,tmp_h);
 
        int usage = GRALLOC_USAGE_PRIVATE_IOMMU_HEAP;
@@ -1091,14 +1031,6 @@ int  CopyBit::drawLayerUsingCopybit(hwc_context_t *dev, hwc_layer_1_t *layer,
     }
     // Copybit region
     hwc_region_t region = layer->visibleRegionScreen;
-    //Do not use visible regions in case of scaling
-    if (region.numRects > 1) {
-        if (needsScaling(layer)) {
-            region.numRects = 1;
-            region.rects = &layer->displayFrame;
-        }
-    }
-
     region_iterator copybitRegion(region);
 
     copybit->set_parameter(copybit, COPYBIT_FRAMEBUFFER_WIDTH,
@@ -1109,14 +1041,12 @@ int  CopyBit::drawLayerUsingCopybit(hwc_context_t *dev, hwc_layer_1_t *layer,
                                               layerTransform);
     //TODO: once, we are able to read layer alpha, update this
     copybit->set_parameter(copybit, COPYBIT_PLANE_ALPHA, 255);
-    copybit->set_parameter(copybit, COPYBIT_DYNAMIC_FPS, dynamic_fps);
     copybit->set_parameter(copybit, COPYBIT_BLEND_MODE,
                                               layer->blending);
     copybit->set_parameter(copybit, COPYBIT_DITHER,
                              (dst.format == HAL_PIXEL_FORMAT_RGB_565)?
                                              COPYBIT_ENABLE : COPYBIT_DISABLE);
-    copybit->set_parameter(copybit, COPYBIT_FG_LAYER,
-                           (layer->blending == HWC_BLENDING_NONE || isFG ) ?
+    copybit->set_parameter(copybit, COPYBIT_FG_LAYER, isFG ?
                                              COPYBIT_ENABLE : COPYBIT_DISABLE);
 
     copybit->set_parameter(copybit, COPYBIT_BLIT_TO_FRAMEBUFFER,
@@ -1269,8 +1199,8 @@ struct copybit_device_t* CopyBit::getCopyBitDevice() {
     return mEngine;
 }
 
-CopyBit::CopyBit(hwc_context_t *ctx, const int& dpy) :  mEngine(0),
-    mIsModeOn(false), mCopyBitDraw(false), mCurRenderBufferIndex(0) {
+CopyBit::CopyBit(hwc_context_t *ctx, const int& dpy) : mEngine(0),
+        mIsModeOn(false), mCopyBitDraw(false), mCurRenderBufferIndex(0) {
 
     getBufferSizeAndDimensions(ctx->dpyAttr[dpy].xres,
             ctx->dpyAttr[dpy].yres,
@@ -1322,8 +1252,6 @@ void CopyBit::LayerCache::updateCounts(hwc_context_t *ctx,
    layerCount = ctx->listStats[dpy].numAppLayers;
    for (int i=0; i<ctx->listStats[dpy].numAppLayers; i++){
       hnd[i] = list->hwLayers[i].handle;
-      displayFrame[i] = list->hwLayers[i].displayFrame;
-      drop[i] = ctx->copybitDrop[i];
    }
 }
 
@@ -1332,24 +1260,19 @@ CopyBit::FbCache::FbCache() {
 }
 void CopyBit::FbCache::reset() {
      memset(&FbdirtyRect, 0, sizeof(FbdirtyRect));
-     memset(&FbdisplayRect, 0, sizeof(FbdisplayRect));
      FbIndex =0;
 }
 
-void CopyBit::FbCache::insertAndUpdateFbCache(hwc_rect_t dirtyRect,
-                                             hwc_rect_t displayRect) {
+void CopyBit::FbCache::insertAndUpdateFbCache(hwc_rect_t dirtyRect) {
    FbIndex =  FbIndex % NUM_RENDER_BUFFERS;
    FbdirtyRect[FbIndex] = dirtyRect;
-   FbdisplayRect[FbIndex] = displayRect;
    FbIndex++;
 }
 
-int CopyBit::FbCache::getUnchangedFbDRCount(hwc_rect_t dirtyRect,
-                                          hwc_rect_t displayRect){
+int CopyBit::FbCache::getUnchangedFbDRCount(hwc_rect_t dirtyRect){
     int sameDirtyCount = 0;
     for (int i = 0 ; i < NUM_RENDER_BUFFERS ; i++ ){
-      if( FbdirtyRect[i] == dirtyRect &&
-          FbdisplayRect[i] == displayRect)
+      if( FbdirtyRect[i] == dirtyRect)
            sameDirtyCount++;
    }
    return sameDirtyCount;

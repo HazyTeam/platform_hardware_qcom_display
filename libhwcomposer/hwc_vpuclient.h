@@ -27,40 +27,41 @@
 * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#ifndef HWC_AD_H
-#define HWC_AD_H
+#ifndef HWC_VPU_H
+#define HWC_VPU_H
 
-#include <overlayUtils.h>
-#include <hwc_utils.h>
+#include <sys/types.h>
 
+//Forward declarations
+struct hwc_display_contents_1;
+typedef struct hwc_display_contents_1 hwc_display_contents_1_t;
 struct hwc_context_t;
+namespace vpu {
+class VPU;
+};
+namespace android {
+class Parcel;
+};
 
 namespace qhwc {
 
-class AssertiveDisplay {
+class VPUClient {
 public:
-    AssertiveDisplay(hwc_context_t *ctx);
-    void markDoable(hwc_context_t *ctx, const hwc_display_contents_1_t* list);
-    bool prepare(hwc_context_t *ctx, const hwc_rect_t& crop,
-            const overlay::utils::Whf& whf,
-            const private_handle_t *hnd);
-    bool draw(hwc_context_t *ctx, int fd, uint32_t offset);
-    //Resets a few members on each draw round
-    void reset() { mDoable = false;
-            mDest = overlay::utils::OV_INVALID;
-    }
-    bool isDoable() const { return mDoable; }
-    int getDstFd(hwc_context_t *ctx) const;
-    uint32_t getDstOffset(hwc_context_t *ctx) const;
+    VPUClient();
+
+    ~VPUClient();
+
+    int prepare(hwc_context_t *ctx, hwc_display_contents_1_t* list);
+
+    int draw(hwc_context_t *ctx, hwc_display_contents_1_t* list);
+
+    int processCommand(uint32_t command,
+            const android::Parcel* inParcel, android::Parcel* outParcel);
 
 private:
-    bool mDoable;
-    bool mTurnedOff;
-    //State of feature existence on certain devices and configs.
-    bool mFeatureEnabled;
-    overlay::utils::eDest mDest;
-    void turnOffAD();
-};
+    vpu::VPU *mVPU;
+    void* mVPULib;
 
-}
-#endif
+}; // class VPU
+}; // namespace qhwc
+#endif /* end of include guard: HWC_VPU_H */

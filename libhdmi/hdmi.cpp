@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2010 The Android Open Source Project
- * Copyright (C) 2012-2014, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2012-2015, The Linux Foundation. All rights reserved.
  *
  * Not a Contribution, Apache license notifications and license are
  * retained for attribution purposes only.
@@ -29,6 +29,7 @@
 #include "hdmi.h"
 #include "overlayUtils.h"
 #include "overlay.h"
+#include "mdp_version.h"
 #include "qd_utils.h"
 
 using namespace android;
@@ -64,31 +65,20 @@ EDIDData gEDIDData [] = {
     EDIDData(HDMI_VFRMT_720x480p60_16_9, 720, 480, 60, 8),
     EDIDData(HDMI_VFRMT_720x576p50_4_3, 720, 576, 50, 9),
     EDIDData(HDMI_VFRMT_720x576p50_16_9, 720, 576, 50, 10),
-    EDIDData(HDMI_VFRMT_800x600p60_4_3, 800, 600, 60, 11),
-    EDIDData(HDMI_VFRMT_848x480p60_16_9, 848, 480, 60, 12),
-    EDIDData(HDMI_VFRMT_1024x768p60_4_3, 1024, 768, 60, 13),
-    EDIDData(HDMI_VFRMT_1280x1024p60_5_4, 1280, 1024, 60, 14),
-    EDIDData(HDMI_VFRMT_1280x720p50_16_9, 1280, 720, 50, 15),
-    EDIDData(HDMI_VFRMT_1280x720p60_16_9, 1280, 720, 60, 16),
-    EDIDData(HDMI_VFRMT_1280x800p60_16_10, 1280, 800, 60, 17),
-    EDIDData(HDMI_VFRMT_1280x960p60_4_3, 1280, 960, 60, 18),
-    EDIDData(HDMI_VFRMT_1360x768p60_16_9, 1360, 768, 60, 19),
-    EDIDData(HDMI_VFRMT_1366x768p60_16_10, 1366, 768, 60, 20),
-    EDIDData(HDMI_VFRMT_1440x900p60_16_10, 1440, 900, 60, 21),
-    EDIDData(HDMI_VFRMT_1400x1050p60_4_3, 1400, 1050, 60, 22),
-    EDIDData(HDMI_VFRMT_1680x1050p60_16_10, 1680, 1050, 60, 23),
-    EDIDData(HDMI_VFRMT_1600x1200p60_4_3, 1600, 1200, 60, 24),
-    EDIDData(HDMI_VFRMT_1920x1080p24_16_9, 1920, 1080, 24, 25),
-    EDIDData(HDMI_VFRMT_1920x1080p25_16_9, 1920, 1080, 25, 26),
-    EDIDData(HDMI_VFRMT_1920x1080p30_16_9, 1920, 1080, 30, 27),
-    EDIDData(HDMI_VFRMT_1920x1080p50_16_9, 1920, 1080, 50, 28),
-    EDIDData(HDMI_VFRMT_1920x1080p60_16_9, 1920, 1080, 60, 29),
-    EDIDData(HDMI_VFRMT_1920x1200p60_16_10, 1920, 1200, 60, 30),
-    EDIDData(HDMI_VFRMT_2560x1600p60_16_9, 2560, 1600, 60, 31),
-    EDIDData(HDMI_VFRMT_3840x2160p24_16_9, 3840, 2160, 24, 32),
-    EDIDData(HDMI_VFRMT_3840x2160p25_16_9, 3840, 2160, 25, 33),
-    EDIDData(HDMI_VFRMT_3840x2160p30_16_9, 3840, 2160, 30, 34),
-    EDIDData(HDMI_VFRMT_4096x2160p24_16_9, 4096, 2160, 24, 35),
+    EDIDData(HDMI_VFRMT_1024x768p60_4_3, 1024, 768, 60, 11),
+    EDIDData(HDMI_VFRMT_1280x1024p60_5_4, 1280, 1024, 60, 12),
+    EDIDData(HDMI_VFRMT_1280x720p50_16_9, 1280, 720, 50, 13),
+    EDIDData(HDMI_VFRMT_1280x720p60_16_9, 1280, 720, 60, 14),
+    EDIDData(HDMI_VFRMT_1920x1080p24_16_9, 1920, 1080, 24, 15),
+    EDIDData(HDMI_VFRMT_1920x1080p25_16_9, 1920, 1080, 25, 16),
+    EDIDData(HDMI_VFRMT_1920x1080p30_16_9, 1920, 1080, 30, 17),
+    EDIDData(HDMI_VFRMT_1920x1080p50_16_9, 1920, 1080, 50, 18),
+    EDIDData(HDMI_VFRMT_1920x1080p60_16_9, 1920, 1080, 60, 19),
+    EDIDData(HDMI_VFRMT_2560x1600p60_16_9, 2560, 1600, 60, 20),
+    EDIDData(HDMI_VFRMT_3840x2160p24_16_9, 3840, 2160, 24, 21),
+    EDIDData(HDMI_VFRMT_3840x2160p25_16_9, 3840, 2160, 25, 22),
+    EDIDData(HDMI_VFRMT_3840x2160p30_16_9, 3840, 2160, 30, 23),
+    EDIDData(HDMI_VFRMT_4096x2160p24_16_9, 4096, 2160, 24, 24),
 };
 
 // Number of modes in gEDIDData
@@ -101,18 +91,14 @@ int HDMIDisplay::configure() {
     }
     readCEUnderscanInfo();
     readResolution();
-    // TODO: Move this to activate
     /* Used for changing the resolution
-     * getUserMode will get the preferred
-     * mode set thru adb shell */
-    mCurrentMode = getUserMode();
-    if (mCurrentMode == -1) {
+     * getUserConfig will get the preferred
+     * config index set thru adb shell */
+    mActiveConfig = getUserConfig();
+    if (mActiveConfig == -1) {
         //Get the best mode and set
-        mCurrentMode = getBestMode();
+        mActiveConfig = getBestConfig();
     }
-    setAttributes();
-    // set system property
-    property_set("hw.hdmiON", "1");
 
     // Read the system property to determine if downscale feature is enabled.
     char value[PROPERTY_VALUE_MAX];
@@ -120,6 +106,20 @@ int HDMIDisplay::configure() {
     if(property_get("sys.hwc.mdp_downscale_enabled", value, "false")
             && !strcmp(value, "true")) {
         mMDPDownscaleEnabled = true;
+    }
+
+    // Set the mode corresponding to the active index
+    mCurrentMode = mEDIDModes[mActiveConfig];
+    setAttributes();
+    // set system property
+    property_set("hw.hdmiON", "1");
+
+    // XXX: A debug property can be used to enable resolution change for
+    // testing purposes: debug.hwc.enable_resolution_change
+    mEnableResolutionChange = false;
+    if(property_get("debug.hwc.enable_resolution_change", value, "false")
+            && !strcmp(value, "true")) {
+        mEnableResolutionChange = true;
     }
     return 0;
 }
@@ -139,7 +139,7 @@ int HDMIDisplay::teardown() {
 
 HDMIDisplay::HDMIDisplay():mFd(-1),
     mCurrentMode(-1), mModeCount(0), mPrimaryWidth(0), mPrimaryHeight(0),
-    mUnderscanSupported(false)
+    mUnderscanSupported(false), mMDPDownscaleEnabled(false)
 {
     memset(&mVInfo, 0, sizeof(mVInfo));
 
@@ -150,10 +150,12 @@ HDMIDisplay::HDMIDisplay():mFd(-1),
     }
 
     mFbNum = overlay::Overlay::getInstance()->getFbForDpy(mDisplayId);
-    // disable HPD at start, it will be enabled later
+    // Disable HPD at start if HDMI is external, it will be enabled later
     // when the display powers on
     // This helps for framework reboot or adb shell stop/start
-    writeHPDOption(0);
+    if (mDisplayId) {
+        writeHPDOption(0);
+    }
 
     // for HDMI - retreive all the modes supported by the driver
     if(mFbNum != -1) {
@@ -223,7 +225,7 @@ int HDMIDisplay::getModeCount() const {
 void HDMIDisplay::readCEUnderscanInfo()
 {
     int hdmiScanInfoFile = -1;
-    ssize_t len = -1;
+    int len = -1;
     char scanInfo[17];
     char *ce_info_str = NULL;
     char *save_ptr;
@@ -236,7 +238,7 @@ void HDMIDisplay::readCEUnderscanInfo()
         return;
     } else {
         len = read(hdmiScanInfoFile, scanInfo, sizeof(scanInfo)-1);
-        ALOGD("%s: Scan Info string: %s length = %zu",
+        ALOGD("%s: Scan Info string: %s length = %d",
                  __FUNCTION__, scanInfo, len);
         if (len <= 0) {
             close(hdmiScanInfoFile);
@@ -244,8 +246,8 @@ void HDMIDisplay::readCEUnderscanInfo()
             return;
         }
         scanInfo[len] = '\0';  /* null terminate the string */
-        close(hdmiScanInfoFile);
     }
+    close(hdmiScanInfoFile);
 
     /*
      * The scan_info contains the three fields
@@ -351,7 +353,7 @@ bool HDMIDisplay::readResolution()
         return false;
     } else {
         len = read(hdmiEDIDFile, edidStr, sizeof(edidStr)-1);
-        ALOGD_IF(DEBUG, "%s: EDID string: %s length = %zu",
+        ALOGD_IF(DEBUG, "%s: EDID string: %s length = %d",
                  __FUNCTION__, edidStr, len);
         if (len <= 0) {
             ALOGE("%s: edid_modes file empty", __FUNCTION__);
@@ -363,8 +365,8 @@ bool HDMIDisplay::readResolution()
             }
             edidStr[len] = '\0';
         }
-        close(hdmiEDIDFile);
     }
+    close(hdmiEDIDFile);
     if(len > 0) {
         // Get EDID modes from the EDID strings
         mModeCount = parseResolution(edidStr);
@@ -425,8 +427,8 @@ int HDMIDisplay::getModeOrder(int mode)
     return -1;
 }
 
-/// Returns the user mode set(if any) using adb shell
-int HDMIDisplay::getUserMode() {
+/// Returns the index of the user mode set(if any) using adb shell
+int HDMIDisplay::getUserConfig() {
     /* Based on the property set the resolution */
     char property_value[PROPERTY_VALUE_MAX];
     property_get("hw.hdmi.resolution", property_value, "-1");
@@ -434,15 +436,16 @@ int HDMIDisplay::getUserMode() {
     // We dont support interlaced modes
     if(isValidMode(mode) && !isInterlacedMode(mode)) {
         ALOGD_IF(DEBUG, "%s: setting the HDMI mode = %d", __FUNCTION__, mode);
-        return mode;
+        return getModeIndex(mode);
     }
     return -1;
 }
 
-// Get the best mode for the current HD TV
-int HDMIDisplay::getBestMode() {
+// Get the index of the best mode for the current HD TV
+int HDMIDisplay::getBestConfig() {
     int bestOrder = 0;
     int bestMode = HDMI_VFRMT_640x480p60_4_3;
+    int bestModeIndex = -1;
     // for all the edid read, get the best mode
     for(int i = 0; i < mModeCount; i++) {
         int mode = mEDIDModes[i];
@@ -450,9 +453,19 @@ int HDMIDisplay::getBestMode() {
         if (order > bestOrder) {
             bestOrder = order;
             bestMode = mode;
+            bestModeIndex = i;
         }
     }
-    return bestMode;
+    // If we fail to read from EDID when HDMI is connected, then
+    // mModeCount will be 0 and bestModeIndex will be invalid.
+    // In this case, we populate the mEDIDModes structure with
+    // a default mode at index 0.
+    if (bestModeIndex == -1) {
+        bestModeIndex = 0;
+        mModeCount = 1;
+        mEDIDModes[bestModeIndex] = bestMode;
+    }
+    return bestModeIndex;
 }
 
 inline bool HDMIDisplay::isValidMode(int ID)
@@ -489,6 +502,7 @@ bool HDMIDisplay::isInterlacedMode(int ID) {
 // the configuration (resolution, timing info) to match mCurrentMode
 void HDMIDisplay::activateDisplay()
 {
+    struct fb_var_screeninfo info;
     int ret = 0;
     ret = ioctl(mFd, FBIOGET_VSCREENINFO, &mVInfo);
     if(ret < 0) {
@@ -567,8 +581,7 @@ void HDMIDisplay::setAttributes() {
     getAttrForMode(mXres, mYres, fps);
     mMDPScalingMode = false;
 
-    if(overlay::Overlay::getInstance()->isUIScalingOnExternalSupported()
-        && mMDPDownscaleEnabled) {
+    if (!qdutils::MDPVersion::getInstance().is8x26() && mMDPDownscaleEnabled) {
         // if primary resolution is more than the hdmi resolution
         // configure dpy attr to primary resolution and set MDP
         // scaling mode
@@ -576,8 +589,7 @@ void HDMIDisplay::setAttributes() {
         // support source split feature.
         uint32_t primaryArea = mPrimaryWidth * mPrimaryHeight;
         if(((primaryArea) > (mXres * mYres)) &&
-            (((primaryArea) <= SUPPORTED_DOWNSCALE_AREA) ||
-                qdutils::MDPVersion::getInstance().isSrcSplit())) {
+            ((primaryArea) <= SUPPORTED_DOWNSCALE_AREA)) {
             // tmpW and tmpH will hold the primary dimensions before we
             // update the aspect ratio if necessary.
             int tmpW = mPrimaryWidth;
@@ -595,36 +607,19 @@ void HDMIDisplay::setAttributes() {
             // keeping aspect ratio intact.
             hwc_rect r = {0, 0, 0, 0};
             qdutils::getAspectRatioPosition(tmpW, tmpH, mXres, mYres, r);
-            uint32_t newExtW = r.right - r.left;
-            uint32_t newExtH = r.bottom - r.top;
-            uint32_t alignedExtW;
-            uint32_t alignedExtH;
-            // On 8994 and below targets MDP supports only 4X downscaling,
-            // Restricting selected external resolution to be exactly 4X
-            // greater resolution than actual external resolution
-            uint32_t maxMDPDownScale =
-                    qdutils::MDPVersion::getInstance().getMaxMDPDownscale();
-            if((mXres * mYres * maxMDPDownScale) < (newExtW * newExtH)) {
-                float upScaleFactor = (float)maxMDPDownScale / 2.0f;
-                newExtW = (int)((float)mXres * upScaleFactor);
-                newExtH = (int)((float)mYres * upScaleFactor);
-            }
-            // Align it down so that the new aligned resolution does not
-            // exceed the maxMDPDownscale factor
-            alignedExtW = overlay::utils::aligndown(newExtW, 4);
-            alignedExtH = overlay::utils::aligndown(newExtH, 4);
-            mXres = alignedExtW;
-            mYres = alignedExtH;
+            mXres = r.right - r.left;
+            mYres = r.bottom - r.top;
+
             // Set External Display MDP Downscale mode indicator
             mMDPScalingMode = true;
         }
     }
-    ALOGD_IF(DEBUG_MDPDOWNSCALE, "Selected external resolution [%d X %d] "
-            "maxMDPDownScale %d mMDPScalingMode %d srcSplitEnabled %d "
+    ALOGD_IF(DEBUG, "Selected external resolution [%d X %d] "
+            "maxMDPDownScale %d mMDPScalingMode %d "
             "MDPDownscale feature %d",
             mXres, mYres,
             qdutils::MDPVersion::getInstance().getMaxMDPDownscale(),
-            mMDPScalingMode, qdutils::MDPVersion::getInstance().isSrcSplit(),
+            mMDPScalingMode,
             mMDPDownscaleEnabled);
     mVsyncPeriod = (int) 1000000000l / fps;
     ALOGD_IF(DEBUG, "%s xres=%d, yres=%d", __FUNCTION__, mXres, mYres);
@@ -694,6 +689,86 @@ void HDMIDisplay::setPrimaryAttributes(uint32_t primaryWidth,
         uint32_t primaryHeight) {
     mPrimaryHeight = primaryHeight;
     mPrimaryWidth = primaryWidth;
+}
+
+int HDMIDisplay::setActiveConfig(int newConfig) {
+    if(newConfig < 0 || newConfig > mModeCount) {
+        ALOGE("%s Invalid configuration %d", __FUNCTION__, newConfig);
+        return -EINVAL;
+    }
+
+    // XXX: Currently, we only support a change in frame rate.
+    // We need to validate the new config before proceeding.
+    if (!isValidConfigChange(newConfig)) {
+        ALOGE("%s Invalid configuration %d", __FUNCTION__, newConfig);
+        return -EINVAL;
+    }
+
+    mCurrentMode =  mEDIDModes[newConfig];
+    mActiveConfig = newConfig;
+    activateDisplay();
+    ALOGD("%s config(%d) mode(%d)", __FUNCTION__, mActiveConfig, mCurrentMode);
+    return 0;
+}
+
+// returns false if the xres or yres of the new config do
+// not match the current config
+bool HDMIDisplay::isValidConfigChange(int newConfig) {
+    int newMode = mEDIDModes[newConfig];
+    uint32_t width = 0, height = 0, refresh = 0;
+    getAttrForConfig(newConfig, width, height, refresh);
+    return ((mXres == width) && (mYres == height)) || mEnableResolutionChange;
+}
+
+int HDMIDisplay::getModeIndex(int mode) {
+    int modeIndex = -1;
+    for(int i = 0; i < mModeCount; i++) {
+        if(mode == mEDIDModes[i]) {
+            modeIndex = i;
+            break;
+        }
+    }
+    return modeIndex;
+}
+
+int HDMIDisplay::getAttrForConfig(int config, uint32_t& xres,
+        uint32_t& yres, uint32_t& refresh) const {
+    if(config < 0 || config > mModeCount) {
+        ALOGE("%s Invalid configuration %d", __FUNCTION__, config);
+        return -EINVAL;
+    }
+    int mode = mEDIDModes[config];
+    uint32_t fps = 0;
+    // Retrieve the mode attributes from gEDIDData
+    for (int dataIndex = 0; dataIndex < gEDIDCount; dataIndex++) {
+        if (gEDIDData[dataIndex].mMode == mode) {
+            if(mMDPScalingMode && (config == mActiveConfig)) {
+                xres = mXres;
+                yres = mYres;
+            } else {
+                xres = gEDIDData[dataIndex].mWidth;
+                yres = gEDIDData[dataIndex].mHeight;
+            }
+            fps = gEDIDData[dataIndex].mFps;
+        }
+    }
+    refresh = (uint32_t) 1000000000l / fps;
+    ALOGD_IF(DEBUG, "%s xres(%d) yres(%d) fps(%d) refresh(%d)", __FUNCTION__,
+            xres, yres, fps, refresh);
+    return 0;
+}
+
+int HDMIDisplay::getDisplayConfigs(uint32_t* configs,
+        size_t* numConfigs) const {
+    if (*numConfigs <= 0) {
+        ALOGE("%s Invalid number of configs (%d)", __FUNCTION__, *numConfigs);
+        return -EINVAL;
+    }
+    *numConfigs = mModeCount;
+    for (int configIndex = 0; configIndex < mModeCount; configIndex++) {
+        configs[configIndex] = (uint32_t)configIndex;
+    }
+    return 0;
 }
 
 };

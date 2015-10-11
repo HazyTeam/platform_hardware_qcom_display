@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2010 The Android Open Source Project
- * Copyright (C) 2012-2014, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2012-2013, The Linux Foundation. All rights reserved.
  *
  * Not a Contribution, Apache license notifications and license are retained
  * for attribution purposes only.
@@ -28,8 +28,6 @@
 #define MAX_SCALE_FACTOR 16
 #define MIN_SCALE_FACTOR 0.0625
 #define MAX_LAYERS_FOR_ABC 2
-#define INVALID_DIMENSION -1
-#define NO_UPDATING_LAYER -2
 namespace qhwc {
 
 class CopyBit {
@@ -50,20 +48,19 @@ public:
     private_handle_t * getCurrentRenderBuffer();
 
     void setReleaseFd(int fd);
-
     void setReleaseFdSync(int fd);
 
     bool prepareOverlap(hwc_context_t *ctx, hwc_display_contents_1_t *list);
 
     int drawOverlap(hwc_context_t *ctx, hwc_display_contents_1_t *list);
 
+
+
 private:
     /* cached data */
     struct LayerCache {
       int layerCount;
       buffer_handle_t hnd[MAX_NUM_APP_LAYERS];
-      hwc_rect_t displayFrame[MAX_NUM_APP_LAYERS];
-      bool drop[MAX_NUM_APP_LAYERS];
       /* c'tor */
       LayerCache();
       /* clear caching info*/
@@ -74,14 +71,11 @@ private:
     /* framebuffer cache*/
     struct FbCache {
       hwc_rect_t  FbdirtyRect[NUM_RENDER_BUFFERS];
-      hwc_rect_t  FbdisplayRect[NUM_RENDER_BUFFERS];
       int FbIndex;
       FbCache();
       void reset();
-      void insertAndUpdateFbCache(hwc_rect_t dirtyRect,
-                               hwc_rect_t displayRect);
-      int getUnchangedFbDRCount(hwc_rect_t dirtyRect,
-                             hwc_rect_t displayRect);
+      void insertAndUpdateFbCache(hwc_rect_t dirtyRect);
+      int getUnchangedFbDRCount(hwc_rect_t dirtyRect);
     };
 
     // holds the copybit device
@@ -91,7 +85,7 @@ private:
                                 int dpy, int *fd);
     // Helper functions for copybit composition
     int  drawLayerUsingCopybit(hwc_context_t *dev, hwc_layer_1_t *layer,
-                          private_handle_t *renderBuffer, bool isFG);
+                          private_handle_t *renderBuffer, int dpy, bool isFG);
     // Helper function to draw copybit layer for PTOR comp
     int drawRectUsingCopybit(hwc_context_t *dev, hwc_layer_1_t *layer,
                           private_handle_t *renderBuffer, hwc_rect_t overlap,
@@ -108,8 +102,8 @@ private:
     // flag that indicates whether CopyBit composition is enabled for this cycle
     bool mCopyBitDraw;
 
-    unsigned int getRGBRenderingArea (const hwc_context_t *ctx,
-                                         const hwc_display_contents_1_t *list);
+    unsigned int getRGBRenderingArea
+                            (const hwc_display_contents_1_t *list);
 
     void getLayerResolution(const hwc_layer_1_t* layer,
                                    unsigned int &width, unsigned int& height);
@@ -130,17 +124,17 @@ private:
 
     //Dynamic composition threshold for deciding copybit usage.
     double mDynThreshold;
-    bool mSwapRectEnable;
     int mAlignedWidth;
     int mAlignedHeight;
+    bool mSwapRectEnable;
+    int mAlignedFBWidth;
+    int mAlignedFBHeight;
     int mSwapRect;
     LayerCache mLayerCache;
     FbCache mFbCache;
     hwc_rect_t mDirtyRect;
     bool prepareSwapRect(hwc_context_t *ctx, hwc_display_contents_1_t *list,
                   int dpy);
-    bool isLayerChanging(hwc_context_t *ctx,
-                            hwc_display_contents_1_t *list, int k);
     bool isSmartBlitPossible(const hwc_display_contents_1_t *list);
 };
 

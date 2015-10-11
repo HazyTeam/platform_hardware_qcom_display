@@ -32,7 +32,6 @@
 #include <poll.h>
 #include <string.h>
 #include <fcntl.h>
-#include <cutils/properties.h>
 
 #define II_DEBUG 0
 #define IDLE_NOTIFY_PATH "/sys/devices/virtual/graphics/fb0/idle_notify"
@@ -48,13 +47,10 @@ IdleInvalidator::IdleInvalidator(): Thread(false), mHwcContext(0),
     ALOGD_IF(II_DEBUG, "IdleInvalidator::%s", __FUNCTION__);
 }
 
-IdleInvalidator::~IdleInvalidator() {
-    if(mTimeoutEventFd >= 0) {
-        close(mTimeoutEventFd);
-    }
-}
-
-int IdleInvalidator::init(InvalidatorHandler reg_handler, void* user_data) {
+int IdleInvalidator::init(InvalidatorHandler reg_handler, void* user_data,
+                         unsigned int idleSleepTime) {
+    ALOGD_IF(II_DEBUG, "IdleInvalidator::%s idleSleepTime %d",
+        __FUNCTION__, idleSleepTime);
     mHandler = reg_handler;
     mHwcContext = user_data;
 
@@ -66,49 +62,32 @@ int IdleInvalidator::init(InvalidatorHandler reg_handler, void* user_data) {
         return -1;
     }
 
-    int defaultIdleTime = 70; //ms
-    char property[PROPERTY_VALUE_MAX] = {0};
-    if((property_get("debug.mdpcomp.idletime", property, NULL) > 0)) {
-        defaultIdleTime = atoi(property);
-    }
-    if(not setIdleTimeout(defaultIdleTime)) {
+    // Open a sysfs node to send the timeout value to driver.
+    int fd = open(IDLE_TIME_PATH, O_WRONLY);
+    if (fd < 0) {
+        ALOGE ("%s:not able to open %s node %s",
+                __FUNCTION__, IDLE_TIME_PATH, strerror(errno));
         close(mTimeoutEventFd);
         mTimeoutEventFd = -1;
         return -1;
     }
+    char strSleepTime[64];
+    snprintf(strSleepTime, sizeof(strSleepTime), "%d", idleSleepTime);
+    // Notify driver about the timeout value
+    ssize_t len = pwrite(fd, strSleepTime, strlen(strSleepTime), 0);
+    if(len < -1) {
+        ALOGE ("%s:not able to write into %s node %s",
+                __FUNCTION__, IDLE_TIME_PATH, strerror(errno));
+        close(mTimeoutEventFd);
+        mTimeoutEventFd = -1;
+        close(fd);
+        return -1;
+    }
+    close(fd);
 
     //Triggers the threadLoop to run, if not already running.
     run(threadName, android::PRIORITY_LOWEST);
     return 0;
-}
-
-bool IdleInvalidator::setIdleTimeout(const uint32_t& timeout) {
-    ALOGD_IF(II_DEBUG, "IdleInvalidator::%s timeout %d",
-            __FUNCTION__, timeout);
-
-    // Open a sysfs node to send the timeout value to driver.
-    int fd = open(IDLE_TIME_PATH, O_WRONLY);
-
-    if (fd < 0) {
-        ALOGE ("%s:Unable to open %s node %s",
-                __FUNCTION__, IDLE_TIME_PATH, strerror(errno));
-        return false;
-    }
-
-    char strSleepTime[64];
-    snprintf(strSleepTime, sizeof(strSleepTime), "%d", timeout);
-
-    // Notify driver about the timeout value
-    ssize_t len = pwrite(fd, strSleepTime, strlen(strSleepTime), 0);
-    if(len < -1) {
-        ALOGE ("%s:Unable to write into %s node %s",
-                __FUNCTION__, IDLE_TIME_PATH, strerror(errno));
-        close(fd);
-        return false;
-    }
-
-    close(fd);
-    return true;
 }
 
 bool IdleInvalidator::threadLoop() {
@@ -124,7 +103,7 @@ bool IdleInvalidator::threadLoop() {
             char data[64];
             // Consume the node by reading it
             ssize_t len = pread(pFd.fd, data, 64, 0);
-            ALOGD_IF(II_DEBUG, "IdleInvalidator::%s Idle Timeout fired len %zd",
+            ALOGD_IF(II_DEBUG, "IdleInvalidator::%s Idle Timeout fired len %zu",
                 __FUNCTION__, len);
             mHandler((void*)mHwcContext);
         }

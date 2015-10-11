@@ -1,5 +1,5 @@
 /*
- *  Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
+ *  Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -61,6 +61,7 @@ status_t QService::dispatch(uint32_t command, const Parcel* inParcel,
     //Rewind parcel in case we're calling from the same process
     if (ipc->getCallingPid() == getpid())
         inParcel->setDataPosition(0);
+
     if (mClient.get()) {
         ALOGD_IF(QSERVICE_DEBUG, "Dispatching command: %d", command);
         err = mClient->notifyCallback(command, inParcel, outParcel);

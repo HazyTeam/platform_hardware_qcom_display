@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2008 The Android Open Source Project
- * Copyright (c) 2010 - 2014, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2010 - 2013, The Linux Foundation. All rights reserved.
  *
  * Not a Contribution, Apache license notifications and license are retained
  * for attribution purposes only.
@@ -37,7 +37,6 @@
 
 #include "gralloc_priv.h"
 #include "software_converter.h"
-#include <qdMetaData.h>
 
 #define DEBUG_MDP_ERRORS 1
 
@@ -64,7 +63,6 @@ struct copybit_context_t {
     int     relFence;
     struct  mdp_buf_sync sync;
     struct  blitReq list;
-    uint8_t dynamic_fps;
 };
 
 /**
@@ -123,10 +121,6 @@ static void intersect(struct copybit_rect_t *out,
     out->b = min(lhs->b, rhs->b);
 }
 
-static bool validateCopybitRect(struct copybit_rect_t *rect) {
-    return ((rect->b > rect->t) && (rect->r > rect->l)) ;
-}
-
 /** convert COPYBIT_FORMAT to MDP format */
 static int get_format(int format) {
     switch (format) {
@@ -160,20 +154,19 @@ static void set_image(struct mdp_img *img, const struct copybit_image_t *rhs)
     img->width      = rhs->w;
     img->height     = rhs->h;
     img->format     = get_format(rhs->format);
-    img->offset     = (uint32_t)hnd->offset;
+    img->offset     = hnd->offset;
     img->memory_id  = hnd->fd;
 }
 /** setup rectangles */
-static bool set_rects(struct copybit_context_t *dev,
+static void set_rects(struct copybit_context_t *dev,
                       struct mdp_blit_req *e,
                       const struct copybit_rect_t *dst,
                       const struct copybit_rect_t *src,
-                      const struct copybit_rect_t *scissor) {
+                      const struct copybit_rect_t *scissor,
+                      uint32_t horiz_padding,
+                      uint32_t vert_padding) {
     struct copybit_rect_t clip;
     intersect(&clip, scissor, dst);
-
-    if (!validateCopybitRect(&clip))
-       return false;
 
     e->dst_rect.x  = clip.l;
     e->dst_rect.y  = clip.t;
@@ -218,7 +211,6 @@ static bool set_rects(struct copybit_context_t *dev,
             e->src_rect.x = (src->l + src->r) - (e->src_rect.x + e->src_rect.w);
         }
     }
-    return true;
 }
 
 /** setup mdp request */
@@ -226,7 +218,6 @@ static void set_infos(struct copybit_context_t *dev,
                       struct mdp_blit_req *req, int flags)
 {
     req->alpha = dev->mAlpha;
-    req->fps = dev->dynamic_fps;
     req->transp_mask = MDP_TRANSP_NOP;
     req->flags = dev->mFlags | flags;
     // check if we are blitting to f/b
@@ -258,7 +249,7 @@ static int msm_copybit(struct copybit_context_t *dev, void const *list)
         for (unsigned int i=0 ; i<l->count ; i++) {
             ALOGE("%d: src={w=%d, h=%d, f=%d, rect={%d,%d,%d,%d}}\n"
                   "    dst={w=%d, h=%d, f=%d, rect={%d,%d,%d,%d}}\n"
-                  "    flags=%08x, fps=%d"
+                  "    flags=%08x"
                   ,
                   i,
                   l->req[i].src.width,
@@ -275,8 +266,7 @@ static int msm_copybit(struct copybit_context_t *dev, void const *list)
                   l->req[i].dst_rect.y,
                   l->req[i].dst_rect.w,
                   l->req[i].dst_rect.h,
-                  l->req[i].flags,
-                  l->req[i].fps
+                  l->req[i].flags
                  );
         }
 #endif
@@ -322,10 +312,7 @@ static int set_parameter_copybit(
             case COPYBIT_PLANE_ALPHA:
                 if (value < 0)      value = MDP_ALPHA_NOP;
                 if (value >= 256)   value = 255;
-                ctx->mAlpha = (uint8_t)value;
-                break;
-            case COPYBIT_DYNAMIC_FPS:
-                ctx->dynamic_fps = (uint8_t)value;
+                ctx->mAlpha = value;
                 break;
             case COPYBIT_DITHER:
                 if (value == COPYBIT_ENABLE) {
@@ -504,8 +491,7 @@ static int stretch_copybit(
                 return -EINVAL;
             }
         }
-        const uint32_t maxCount =
-                (uint32_t)(sizeof(list->req)/sizeof(list->req[0]));
+        const uint32_t maxCount = sizeof(list->req)/sizeof(list->req[0]);
         const struct copybit_rect_t bounds = { 0, 0, (int)dst->w, (int)dst->h };
         struct copybit_rect_t clip;
         status = 0;
@@ -520,22 +506,10 @@ static int stretch_copybit(
                 flags |=  MDP_BLIT_NON_CACHED;
             }
 
-            // Set Color Space for MDP to configure CSC matrix
-            req->color_space = ITU_R_601;
-            MetaData_t *metadata = NULL;
-
-            if (src_hnd != NULL)
-                metadata = (MetaData_t *)src_hnd->base_metadata;
-
-            if (metadata && (metadata->operation & UPDATE_COLOR_SPACE)) {
-                req->color_space = metadata->colorSpace;
-            }
-
             set_infos(ctx, req, flags);
             set_image(&req->dst, dst);
             set_image(&req->src, src);
-            if (set_rects(ctx, req, dst_rect, src_rect, &clip) == false)
-                continue;
+            set_rects(ctx, req, dst_rect, src_rect, &clip, src->horiz_padding, src->vert_padding);
 
             if (req->src_rect.w<=0 || req->src_rect.h<=0)
                 continue;
@@ -580,9 +554,6 @@ static int blit_copybit(
 static int finish_copybit(struct copybit_device_t *dev)
 {
     // NOP for MDP copybit
-    if(!dev)
-       return -EINVAL;
-
     return 0;
 }
 static int clear_copybit(struct copybit_device_t *dev,
@@ -600,6 +571,7 @@ static int clear_copybit(struct copybit_device_t *dev,
     struct blitReq list1;
     memset((char *)&list1 , 0 ,sizeof (struct blitReq) );
     list1.count = 1;
+    int rel_fen_fd = -1;
     int my_tmp_get_fence = -1;
 
     list1.sync.acq_fen_fd  =  ctx->acqFence;
@@ -731,17 +703,8 @@ static int open_copybit(const struct hw_module_t* module, const char* name,
                         struct hw_device_t** device)
 {
     int status = -EINVAL;
-
-    if (strcmp(name, COPYBIT_HARDWARE_COPYBIT0)) {
-        return COPYBIT_FAILURE;
-    }
     copybit_context_t *ctx;
     ctx = (copybit_context_t *)malloc(sizeof(copybit_context_t));
-
-    if (ctx == NULL ) {
-       return COPYBIT_FAILURE;
-    }
-
     memset(ctx, 0, sizeof(*ctx));
 
     ctx->device.common.tag = HARDWARE_DEVICE_TAG;
@@ -758,9 +721,6 @@ static int open_copybit(const struct hw_module_t* module, const char* name,
     ctx->device.flush_get_fence = flush_get_fence;
     ctx->device.clear = clear_copybit;
     ctx->mAlpha = MDP_ALPHA_NOP;
-    //dynamic_fps is zero means default
-    //panel refresh rate for driver.
-    ctx->dynamic_fps = 0;
     ctx->mFlags = 0;
     ctx->sync.flags = 0;
     ctx->relFence = -1;

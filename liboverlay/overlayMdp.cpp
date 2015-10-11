@@ -1,6 +1,6 @@
 /*
 * Copyright (C) 2008 The Android Open Source Project
-* Copyright (c) 2010-2014, The Linux Foundation. All rights reserved.
+* Copyright (c) 2010-2013, The Linux Foundation. All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -22,6 +22,11 @@
 #include "mdp_version.h"
 #include <overlay.h>
 
+#ifdef USES_QSEED_SCALAR
+#include <scale/scale.h>
+using namespace scale;
+#endif
+
 #define HSIC_SETTINGS_DEBUG 0
 
 using namespace qdutils;
@@ -29,6 +34,13 @@ using namespace qdutils;
 static inline bool isEqual(float f1, float f2) {
         return ((int)(f1*100) == (int)(f2*100)) ? true : false;
 }
+
+#ifdef ANDROID_JELLYBEAN_MR1
+//Since this is unavailable on Android 4.2.2, defining it in terms of base 10
+static inline float log2f(const float& x) {
+    return log(x) / log(2);
+}
+#endif
 
 namespace ovutils = overlay::utils;
 namespace overlay {
@@ -54,6 +66,7 @@ void MdpCtrl::reset() {
     utils::memset0(mOVInfo);
     mOVInfo.id = MSMFB_NEW_REQUEST;
     mOrientation = utils::OVERLAY_TRANSFORM_0;
+    mDownscale = 0;
     mDpy = 0;
 #ifdef USES_POST_PROCESSING
     memset(&mParams, 0, sizeof(struct compute_params));
@@ -96,6 +109,7 @@ void MdpCtrl::setSource(const utils::PipeArgs& args) {
     //TODO These calls should ideally be a part of setPipeParams API
     setFlags(args.mdpFlags);
     setZ(args.zorder);
+    setIsFg(args.isFg);
     setPlaneAlpha(args.planeAlpha);
     setBlending(args.blending);
 }
@@ -145,10 +159,39 @@ void MdpCtrl::doTransform() {
 }
 
 void MdpCtrl::doDownscale() {
-    if(MDPVersion::getInstance().supportsDecimation()) {
+    int mdpVersion = MDPVersion::getInstance().getMDPVersion();
+    if(mdpVersion < MDSS_V5) {
+        mOVInfo.src_rect.x >>= mDownscale;
+        mOVInfo.src_rect.y >>= mDownscale;
+        mOVInfo.src_rect.w >>= mDownscale;
+        mOVInfo.src_rect.h >>= mDownscale;
+    } else if(MDPVersion::getInstance().supportsDecimation()) {
+        //Decimation + MDP Downscale
+        mOVInfo.horz_deci = 0;
+        mOVInfo.vert_deci = 0;
+        int minHorDeci = 0;
+        if(mOVInfo.src_rect.w > 2048) {
+            //If the client sends us something > what a layer mixer supports
+            //then it means it doesn't want to use split-pipe but wants us to
+            //decimate. A minimum decimation of 2 will ensure that the width is
+            //always within layer mixer limits.
+            minHorDeci = 2;
+        }
+
+        float horDscale = 0.0f;
+        float verDscale = 0.0f;
+
         utils::getDecimationFactor(mOVInfo.src_rect.w, mOVInfo.src_rect.h,
-                mOVInfo.dst_rect.w, mOVInfo.dst_rect.h, mOVInfo.horz_deci,
-                mOVInfo.vert_deci);
+                mOVInfo.dst_rect.w, mOVInfo.dst_rect.h, horDscale, verDscale);
+
+        if(horDscale < minHorDeci)
+            horDscale = minHorDeci;
+
+        if((int)horDscale)
+            mOVInfo.horz_deci = (int)log2f(horDscale);
+
+        if((int)verDscale)
+            mOVInfo.vert_deci = (int)log2f(verDscale);
     }
 }
 
@@ -216,17 +259,15 @@ void MdpData::getDump(char *buf, size_t len) {
     ovutils::getDump(buf, len, "Data", mOvData);
 }
 
+void MdpCtrl3D::dump() const {
+    ALOGE("== Dump MdpCtrl start ==");
+    mFd.dump();
+    ALOGE("== Dump MdpCtrl end ==");
+}
+
 bool MdpCtrl::setVisualParams(const MetaData_t& data) {
-    ALOGD_IF(0, "In %s: data.operation = %d", __FUNCTION__, data.operation);
-
-    // Set Color Space for MDP to configure CSC matrix
-    mOVInfo.color_space = ITU_R_601;
-    if (data.operation & UPDATE_COLOR_SPACE) {
-        mOVInfo.color_space = data.colorSpace;
-    }
-
-#ifdef USES_POST_PROCESSING
     bool needUpdate = false;
+#ifdef USES_POST_PROCESSING
     /* calculate the data */
     if (data.operation & PP_PARAM_HSIC) {
         if (mParams.params.pa_params.hue != data.hsicData.hue) {
@@ -353,18 +394,16 @@ bool MdpCtrl::validateAndSet(MdpCtrl* mdpCtrlArray[], const int& count,
     list.num_overlays = count;
     list.overlay_list = ovArray;
 
-   int (*fnProgramScale)(struct mdp_overlay_list *) =
-        Overlay::getFnProgramScale();
-    if(fnProgramScale) {
-        fnProgramScale(&list);
+#ifdef USES_QSEED_SCALAR
+    Scale *scalar = Overlay::getScalar();
+    if(scalar) {
+        scalar->applyScale(&list);
     }
+#endif
 
-    // Error value is based on file errno-base.h
-    // 0 - indicates no error.
-    int errVal = mdp_wrapper::validateAndSet(fbFd, list);
-    if(errVal) {
+    if(!mdp_wrapper::validateAndSet(fbFd, list)) {
         /* No dump for failure due to insufficient resource */
-        if(errVal != E2BIG) {
+        if(errno != E2BIG) {
             mdp_wrapper::dump("Bad ov dump: ",
                 *list.overlay_list[list.processed_overlays]);
         }

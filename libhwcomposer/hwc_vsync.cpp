@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2010 The Android Open Source Project
- * Copyright (C) 2012-2014, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2012-2013, The Linux Foundation. All rights reserved.
  *
  * Not a Contribution, Apache license notifications and license are
  * retained for attribution purposes only.
@@ -27,12 +27,9 @@
 #include <sys/prctl.h>
 #include <poll.h>
 #include "hwc_utils.h"
-#include "hdmi.h"
 #include "qd_utils.h"
 #include "string.h"
 #include "overlay.h"
-#define __STDC_FORMAT_MACROS 1
-#include <inttypes.h>
 
 using namespace qdutils;
 namespace qhwc {
@@ -40,8 +37,8 @@ namespace qhwc {
 #define HWC_VSYNC_THREAD_NAME "hwcVsyncThread"
 #define PANEL_ON_STR "panel_power_on ="
 #define ARRAY_LENGTH(array) (sizeof((array))/sizeof((array)[0]))
-#define MAX_THERMAL_LEVEL 3
 const int MAX_DATA = 64;
+bool logvsync = false;
 
 int hwc_vsync_control(hwc_context_t* ctx, int dpy, int enable)
 {
@@ -64,7 +61,7 @@ static void handle_vsync_event(hwc_context_t* ctx, int dpy, char *data)
         timestamp = strtoull(data + strlen("VSYNC="), NULL, 0);
     }
     // send timestamp to SurfaceFlinger
-    ALOGD_IF (ctx->vstate.debug, "%s: timestamp %" PRIu64 " sent to SF for dpy=%d",
+    ALOGD_IF (logvsync, "%s: timestamp %llu sent to SF for dpy=%d",
             __FUNCTION__, timestamp, dpy);
     ctx->proc->vsync(ctx->proc, dpy, timestamp);
 }
@@ -72,27 +69,10 @@ static void handle_vsync_event(hwc_context_t* ctx, int dpy, char *data)
 static void handle_blank_event(hwc_context_t* ctx, int dpy, char *data)
 {
     if (!strncmp(data, PANEL_ON_STR, strlen(PANEL_ON_STR))) {
-        unsigned long int poweron = strtoul(data + strlen(PANEL_ON_STR), NULL, 0);
-        ALOGI("%s: dpy:%d panel power state: %ld", __FUNCTION__, dpy, poweron);
-        if (!ctx->mHDMIDisplay->isHDMIPrimaryDisplay()) {
-            ctx->dpyAttr[dpy].isActive = poweron ? true: false;
-        }
+        uint32_t poweron = strtoul(data + strlen(PANEL_ON_STR), NULL, 0);
+        ALOGI("%s: dpy:%d panel power state: %d", __FUNCTION__, dpy, poweron);
+        ctx->dpyAttr[dpy].isActive = poweron ? true: false;
     }
-}
-
-static void handle_thermal_event(hwc_context_t* ctx, int dpy, char *data)
-{
-    // extract thermal level
-    uint64_t thermalLevel = 0;
-    if (!strncmp(data, "thermal_level=", strlen("thermal_level="))) {
-        thermalLevel = strtoull(data + strlen("thermal_level="), NULL, 0);
-    }
-
-    if (thermalLevel >= MAX_THERMAL_LEVEL) {
-        ALOGD("%s: dpy:%d thermal_level=%" PRIu64 "",__FUNCTION__,dpy,thermalLevel);
-        ctx->mThermalBurstMode = true;
-    } else
-        ctx->mThermalBurstMode = false;
 }
 
 struct event {
@@ -103,7 +83,6 @@ struct event {
 struct event event_list[] =  {
     { "vsync_event", handle_vsync_event },
     { "show_blank_event", handle_blank_event },
-    { "msm_fb_thermal_level", handle_thermal_event },
 };
 
 #define num_events ARRAY_LENGTH(event_list)
@@ -127,6 +106,11 @@ static void *vsync_loop(void *param)
     if(property_get("debug.hwc.fakevsync", property, NULL) > 0) {
         if(atoi(property) == 1)
             ctx->vstate.fakevsync = true;
+    }
+
+    if(property_get("debug.hwc.logvsync", property, 0) > 0) {
+        if(atoi(property) == 1)
+            logvsync = true;
     }
 
     char node_path[MAX_SYSFS_FILE_PATH];
@@ -157,9 +141,7 @@ static void *vsync_loop(void *param)
                 }
             }
 
-            memset(&vdata, '\0', sizeof(vdata));
-            // Read once from the fds to clear the first notify
-            pread(pfd[dpy][ev].fd, vdata , MAX_DATA - 1, 0);
+            pread(pfd[dpy][ev].fd, vdata , MAX_DATA, 0);
             if (pfd[dpy][ev].fd >= 0)
                 pfd[dpy][ev].events = POLLPRI | POLLERR;
         }
@@ -167,16 +149,13 @@ static void *vsync_loop(void *param)
 
     if (LIKELY(!ctx->vstate.fakevsync)) {
         do {
-            int err = poll(*pfd, (int)(num_displays * num_events), -1);
+            int err = poll(*pfd, num_displays * num_events, -1);
             if(err > 0) {
                 for (int dpy = HWC_DISPLAY_PRIMARY; dpy < num_displays; dpy++) {
                     for(size_t ev = 0; ev < num_events; ev++) {
                         if (pfd[dpy][ev].revents & POLLPRI) {
-                            // Clear vdata before writing into it
-                            memset(&vdata, '\0', sizeof(vdata));
-                            ssize_t len = pread(pfd[dpy][ev].fd, vdata,
-                                                MAX_DATA - 1, 0);
-                            if (UNLIKELY(len < 0)) {
+                            err = pread(pfd[dpy][ev].fd, vdata, MAX_DATA, 0);
+                            if (UNLIKELY(err < 0)) {
                                 // If the read was just interrupted - it is not
                                 // a fatal error. Just continue in this case
                                 ALOGE ("%s: Unable to read event:%zu for \
@@ -184,7 +163,6 @@ static void *vsync_loop(void *param)
                                         __FUNCTION__, ev, dpy, strerror(errno));
                                 continue;
                             }
-                            vdata[len] = '\0';
                             event_list[ev].callback(ctx, dpy, vdata);
                         }
                     }
